@@ -5,7 +5,7 @@
 
 Global persistent memory for [pi coding agent](https://pi.dev) sessions. **Open. Configurable.** Inspired by Claude Code's auto-memory — your agent remembers what it learns, across every session, globally.
 
-A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory) to pi's extension API. 
+A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory) to pi's extension API.
 
 > Considering that vast majority of people who use **pi** literally creates their own extensions, I'm shooting my shot on this memory extension that I believe is good enough to be your *ultra-simplest* memory handler.
 
@@ -97,11 +97,12 @@ The default location respects `PI_CODING_AGENT_DIR` if set (pi's config-dir over
 
 The extension registers three tools the agent uses for all memory operations:
 
-| Tool | Args | What it does |
-|---|---|---|
-| `write_memory` | `topic`, `content`, `summary`, `pin?`, `overwrite?` | Creates or appends to a topic file; upserts `MEMORY.md` index |
-| `remove_memory` | `topic` | Removes the index entry (refuses if pinned); topic file preserved |
-| `pin_memory` | `topic`, `pin` (bool) | Pins or unpins an index entry |
+
+| Tool            | Args                                                | What it does                                                      |
+| ----------------- | ----------------------------------------------------- | ------------------------------------------------------------------- |
+| `write_memory`  | `topic`, `content`, `summary`, `pin?`, `overwrite?` | Creates or appends to a topic file; upserts`MEMORY.md` index      |
+| `remove_memory` | `topic`                                             | Removes the index entry (refuses if pinned); topic file preserved |
+| `pin_memory`    | `topic`, `pin` (bool)                               | Pins or unpins an index entry                                     |
 
 `overwrite: true` replaces the full topic body in-place (frontmatter preserved, `last_updated` refreshed). Use for state entries that should be current — hardware specs, environment config, user preferences. Default (`false`) appends under a `## YYYY-MM-DD` date heading, which is correct for logs of fixes, discoveries, and incremental notes.
 
@@ -109,6 +110,7 @@ Use these instead of asking the agent to edit files directly — they guarantee 
 
 ## `/memory` command
 
+![ss-memory-command](ss/ss-memory-command.png)
 ```
 /memory                    → open interactive memory browser
 /memory <text>             → store something (agent picks topic, summary, pin)
@@ -118,12 +120,16 @@ Use these instead of asking the agent to edit files directly — they guarantee 
 ```
 
 **`/memory` (no args)** opens a navigable overlay browser:
+
+![ss-memory-list](ss/ss-memory-list.png)
 - **List view** — all topics with date and pin/stale status. `↑↓` to navigate, `enter` to open a topic, `p` to pin/unpin the highlighted entry in-place, `esc` to close.
 - **Detail view** — full Markdown-rendered topic body with metadata. Action list: Pin/Unpin, Remove, Back. `p` hotkey for pin/unpin. Any action or `esc` returns to the list.
 
 **`/memory <text>`** sends the text to the agent with an instruction to call `write_memory`. The agent decides the topic name, filename, summary, and whether to pin it.
 
 `pin`, `unpin`, and `remove` by name run directly in the command handler — no LLM round-trip.
+
+![ss-memory-detail](ss/ss-memory-detail.png)
 
 ## Auto-injection
 
@@ -145,44 +151,48 @@ Estimates use cl100k-compatible tokenization (~4 chars/token for English prose, 
 
 `write_memory`'s `promptSnippet` and three `promptGuidelines` bullets are injected into the system prompt on **every turn**, regardless of `inject_every_n_turns`:
 
-| Component | ~Tokens |
-|---|---|
-| Tool snippet ("Persist facts, preferences…") | 20 |
-| Guideline: when to call write_memory | 47 |
-| Guideline: check Memory Rules | 25 |
-| Guideline: overwrite vs append | 37 |
-| **Per-turn base** | **~130** |
+
+| Component                                     | ~Tokens  |
+| ----------------------------------------------- | ---------- |
+| Tool snippet ("Persist facts, preferences…") | 20       |
+| Guideline: when to call write_memory          | 47       |
+| Guideline: check Memory Rules                 | 25       |
+| Guideline: overwrite vs append                | 37       |
+| **Per-turn base**                             | **~130** |
 
 ### Injection cost — added on injected turns
 
-| Component | ~Tokens |
-|---|---|
-| `## Global Memory` heading, preamble, memory dir path | 59 |
-| `## Memory Rules` heading, preamble, RULES.jsonc path | 45 |
-| Default rules content (3 sections, 11 bullets) | 157 |
-| `# Memory Index` header | 4 |
-| **Fixed injection overhead** | **~265** |
-| Per index entry (name, filename, ISO datetime, summary) | ~35 |
+
+| Component                                               | ~Tokens  |
+| --------------------------------------------------------- | ---------- |
+| `## Global Memory` heading, preamble, memory dir path   | 59       |
+| `## Memory Rules` heading, preamble, RULES.jsonc path   | 45       |
+| Default rules content (3 sections, 11 bullets)          | 157      |
+| `# Memory Index` header                                 | 4        |
+| **Fixed injection overhead**                            | **~265** |
+| Per index entry (name, filename, ISO datetime, summary) | ~35      |
 
 The per-entry cost is for a typical line with a full ISO datetime stamp and a one-sentence summary. Pinned or stale entries add ~2–3 tokens each.
 
 ### Total per injected turn
 
-| Scenario | Entries | Injection | Always | **Total** |
-|---|---|---|---|---|
-| Fresh install | 0 | ~265 | ~130 | **~395** |
-| Normal use | 10 | ~615 | ~130 | **~745** |
-| Active use | 25 | ~1,140 | ~130 | **~1,270** |
-| Fully loaded | 50 | ~2,015 | ~130 | **~2,145** |
-| At `max_lines: 200` cap | ~197 | ~7,160 | ~130 | **~7,290** |
+
+| Scenario               | Entries | Injection | Always | **Total**  |
+| ------------------------ | --------- | ----------- | -------- | ------------ |
+| Fresh install          | 0       | ~265      | ~130   | **~395**   |
+| Normal use             | 10      | ~615      | ~130   | **~745**   |
+| Active use             | 25      | ~1,140    | ~130   | **~1,270** |
+| Fully loaded           | 50      | ~2,015    | ~130   | **~2,145** |
+| At`max_lines: 200` cap | ~197    | ~7,160    | ~130   | **~7,290** |
 
 With `inject_every_n_turns: 5` (default), the amortized cost per turn is `(injection + 4 × base) ÷ 5`:
 
-| Scenario | Amortized/turn |
-|---|---|
-| Normal use (10 entries) | **~253** |
-| Fully loaded (50 entries) | **~533** |
-| At cap (197 entries) | **~1,510** |
+
+| Scenario                  | Amortized/turn |
+| --------------------------- | ---------------- |
+| Normal use (10 entries)   | **~253**       |
+| Fully loaded (50 entries) | **~533**       |
+| At cap (197 entries)      | **~1,510**     |
 
 Non-injected turns (e.g. turns 2–4 with default N = 5) cost only the per-turn base: **~130 tokens**.
 
@@ -196,23 +206,25 @@ The injection block is skipped on non-injected turns — that is where all the s
 
 N = 5 injects at turns 1, 5, 10, 15, 20 (5 injections; 15 turns skipped):
 
+
 | Index size | N=1 total (baseline) | N=5 total | Tokens saved | % saved |
-|---|---|---|---|---|
-| 10 entries | ~14,900 | ~5,675 | **~9,225** | 62% |
-| 20 entries | ~22,700 | ~7,825 | **~14,875** | 66% |
-| 30 entries | ~28,900 | ~9,175 | **~19,725** | 68% |
+| ------------ | ---------------------- | ----------- | -------------- | --------- |
+| 10 entries | ~14,900              | ~5,675    | **~9,225**   | 62%     |
+| 20 entries | ~22,700              | ~7,825    | **~14,875**  | 66%     |
+| 30 entries | ~28,900              | ~9,175    | **~19,725**  | 68%     |
 
 **Effect of different N values — 20-turn read-heavy session, 10-entry index**
 
 Injection count uses the actual `_turnCount % N === 0` logic (first turn always injects, then every N turns thereafter):
 
-| `inject_every_n_turns` | Injections / 20 turns | Session total | vs N=1 | Saved |
-|---|---|---|---|---|
-| 1 (every turn) | 20 | ~14,900 | — | — |
-| 3 | 7 | ~6,905 | ~7,995 | 54% |
-| **5 (default)** | **5** | **~5,675** | **~9,225** | **62%** |
-| 10 | 3 | ~4,445 | ~10,455 | 70% |
-| 20 | 2 | ~3,830 | ~11,070 | 74% |
+
+| `inject_every_n_turns` | Injections / 20 turns | Session total | vs N=1     | Saved   |
+| ------------------------ | ----------------------- | --------------- | ------------ | --------- |
+| 1 (every turn)         | 20                    | ~14,900       | —         | —      |
+| 3                      | 7                     | ~6,905        | ~7,995     | 54%     |
+| **5 (default)**        | **5**                 | **~5,675**    | **~9,225** | **62%** |
+| 10                     | 3                     | ~4,445        | ~10,455    | 70%     |
+| 20                     | 2                     | ~3,830        | ~11,070    | 74%     |
 
 Higher N saves more tokens but increases the gap between memory rule refreshes. For read-heavy sessions where the agent only consults the index, N = 10–20 is reasonable. For write-heavy sessions where the agent actively stores new entries, keep N at 5 or lower so the rules stay recent in context.
 
@@ -289,17 +301,18 @@ Maintenance never runs on read — only on write.
 
 This is a pi **extension** packaged as a **pi package** (keyword `pi-package`, installable via `pi install`). No build step — pi loads the TypeScript via jiti at runtime.
 
-**Extension entry:** `extensions/index.ts`  
-**Core logic:** `extensions/memory-core.mjs` (plain JS, no pi imports — independently testable)  
+**Extension entry:** `extensions/index.ts`
+**Core logic:** `extensions/memory-core.mjs` (plain JS, no pi imports — independently testable)
 **Skill:** `skills/memory/SKILL.md`
 
 Hooks used:
 
-| Hook | Purpose |
-|---|---|
-| `session_start` | Bootstrap `memory/` dir, `MEMORY.md`, and `RULES.jsonc`; reset injection state |
-| `before_agent_start` | Inject `MEMORY.md` + rendered rules into system prompt (once per user prompt) |
-| `session_before_compact` | Reset injection state so first prompt after compaction re-injects |
+
+| Hook                     | Purpose                                                                       |
+| -------------------------- | ------------------------------------------------------------------------------- |
+| `session_start`          | Bootstrap`memory/` dir, `MEMORY.md`, and `RULES.jsonc`; reset injection state |
+| `before_agent_start`     | Inject`MEMORY.md` + rendered rules into system prompt (once per user prompt)  |
+| `session_before_compact` | Reset injection state so first prompt after compaction re-injects             |
 
 `before_agent_start` fires at the start of each user prompt, so the next injection point naturally re-reads fresh state. `write_memory` also carries `promptSnippet` and `promptGuidelines` so the model always has a reminder to persist, even on turns where the full memory block is not injected.
 
@@ -307,14 +320,15 @@ Hooks used:
 
 The extension injects plain markdown into the system prompt and registers structured tools. Tool calls guarantee correct format and index integrity regardless of model tier — only the model's decision to call the tool (and what args to pass) varies.
 
-| Feature | Large (20B+) | Small-Mid (>7B <20B) | Compact (<7B) |
-|---|---|---|---|
-| `/memory` show index | Reliable | Reliable | Reliable |
-| `/memory <text>` store via `write_memory` | Reliable | Reliable | Reliable |
-| `/memory pin/unpin/remove` | Reliable | Reliable | Reliable |
-| Auto-trigger writes (persist rules) | Reliable | Reliable | Usually works |
-| Topic/summary quality on auto-writes | Reliable | Reliable | Usually works |
-| `[stale?]` flagging and self-healing | Extension-guaranteed | Extension-guaranteed | Extension-guaranteed |
+
+| Feature                                   | Large (20B+)         | Small-Mid (>7B <20B) | Compact (<7B)        |
+| ------------------------------------------- | ---------------------- | ---------------------- | ---------------------- |
+| `/memory` show index                      | Reliable             | Reliable             | Reliable             |
+| `/memory <text>` store via `write_memory` | Reliable             | Reliable             | Reliable             |
+| `/memory pin/unpin/remove`                | Reliable             | Reliable             | Reliable             |
+| Auto-trigger writes (persist rules)       | Reliable             | Reliable             | Usually works        |
+| Topic/summary quality on auto-writes      | Reliable             | Reliable             | Usually works        |
+| `[stale?]` flagging and self-healing      | Extension-guaranteed | Extension-guaranteed | Extension-guaranteed |
 
 For compact or edge models, `/memory <text>` explicit commands are always more reliable than relying on auto-trigger writes.
 
