@@ -16,15 +16,17 @@ import path from 'path';
 
 const AGENT_DIR = process.env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), '.pi', 'agent');
 export const MEMORY_DIR = path.join(AGENT_DIR, 'memory');
-export const MEMORY_INDEX = path.join(MEMORY_DIR, 'MEMORY.md');
-export const MEMORY_RULES = path.join(MEMORY_DIR, 'RULES.jsonc');
+export const MEMORY_INDEX   = path.join(MEMORY_DIR, 'MEMORY.md');
+export const MEMORY_RULES   = path.join(MEMORY_DIR, 'RULES.jsonc');
+export const HANDOFF_FILE   = path.join(MEMORY_DIR, 'HANDOFF.md');
 
 // --- Constants ---
 
 export const MAX_LINES = 200;
 export const MAX_BYTES = 25 * 1024;
-export const DEFAULT_STALE_DAYS = 180;
+export const DEFAULT_STALE_DAYS     = 180;
 export const DEFAULT_INJECT_INTERVAL = 5;
+export const DEFAULT_HANDOFF_KEEP   = 3;
 
 // --- Initial file content ---
 
@@ -56,7 +58,9 @@ export const INITIAL_RULES_JSONC = `{
   // stale_after_days: 0 = disable age flagging
   "stale_after_days": 180,
   // inject_every_n_turns: re-inject memory every N user prompts; 1 = every prompt
-  "inject_every_n_turns": 5
+  "inject_every_n_turns": 5,
+  // handoff_keep: number of past compaction handoffs to retain in HANDOFF.md; 0 = disable
+  "handoff_keep": 3
 }
 `;
 
@@ -83,9 +87,10 @@ export function parseRules() {
       alwaysPersist: Array.isArray(obj.always_persist) ? obj.always_persist : [],
       neverPersist:  Array.isArray(obj.never_persist)  ? obj.never_persist  : [],
       alwaysAsk:     Array.isArray(obj.always_ask)     ? obj.always_ask     : [],
-      maxLines:          Math.min(500, Math.max(50,  typeof obj.max_lines          === 'number' ? obj.max_lines          : MAX_LINES)),
-      staleAfterDays:    Math.max(0,               typeof obj.stale_after_days    === 'number' ? obj.stale_after_days    : DEFAULT_STALE_DAYS),
-      injectEveryNTurns: Math.max(1,               typeof obj.inject_every_n_turns === 'number' ? obj.inject_every_n_turns : DEFAULT_INJECT_INTERVAL),
+      maxLines:          Math.min(500, Math.max(50,  typeof obj.max_lines           === 'number' ? obj.max_lines           : MAX_LINES)),
+      staleAfterDays:    Math.max(0,               typeof obj.stale_after_days     === 'number' ? obj.stale_after_days     : DEFAULT_STALE_DAYS),
+      injectEveryNTurns: Math.max(1,               typeof obj.inject_every_n_turns  === 'number' ? obj.inject_every_n_turns  : DEFAULT_INJECT_INTERVAL),
+      handoffKeep:       Math.max(0,               typeof obj.handoff_keep          === 'number' ? obj.handoff_keep          : DEFAULT_HANDOFF_KEEP),
     };
   } catch {
     return {
@@ -95,6 +100,7 @@ export function parseRules() {
       maxLines:          MAX_LINES,
       staleAfterDays:    DEFAULT_STALE_DAYS,
       injectEveryNTurns: DEFAULT_INJECT_INTERVAL,
+      handoffKeep:       DEFAULT_HANDOFF_KEEP,
     };
   }
 }
@@ -319,6 +325,50 @@ export function findIndexEntry(lines, search) {
   return null;
 }
 
+/**
+ * Search the index and topic file bodies for a case-insensitive substring.
+ * Returns matches as { name, filename, matchType: 'index'|'body', snippet }.
+ * Index matches take priority; a topic that matched the index is not also
+ * returned as a body match.
+ */
+export function searchMemory(query) {
+  const q = query.toLowerCase();
+  const results = [];
+  const indexedNames = new Set();
+
+  // (a) index — name, filename, summary
+  for (const entry of readIndexEntries()) {
+    if (
+      entry.name.toLowerCase().includes(q) ||
+      entry.filename.toLowerCase().includes(q) ||
+      entry.summary.toLowerCase().includes(q)
+    ) {
+      const snippet = entry.summary || entry.name;
+      results.push({ name: entry.name, filename: entry.filename, matchType: 'index', snippet });
+      indexedNames.add(entry.filename);
+    }
+  }
+
+  // (b) topic file bodies — skip files already matched via index
+  const SKIP = new Set(['MEMORY.md', 'RULES.jsonc', 'HANDOFF.md']);
+  if (!fs.existsSync(MEMORY_DIR)) return results;
+  for (const file of fs.readdirSync(MEMORY_DIR)) {
+    if (!file.endsWith('.md')) continue;
+    if (SKIP.has(file) || indexedNames.has(file)) continue;
+    const filePath = path.join(MEMORY_DIR, file);
+    const lines = fs.readFileSync(filePath, 'utf8').split('\n');
+    for (const line of lines) {
+      if (line.toLowerCase().includes(q)) {
+        const snippet = line.trim().slice(0, 120);
+        results.push({ name: file.replace(/\.md$/, ''), filename: file, matchType: 'body', snippet });
+        break; // first matching line per file
+      }
+    }
+  }
+
+  return results;
+}
+
 // --- Concurrency ---
 
 // process-global mutex; safe for single-user extension.
@@ -430,6 +480,72 @@ export async function executePinMemory({ topic, pin }) {
     fs.writeFileSync(MEMORY_INDEX, lines.join('\n'), 'utf8');
     return `${pin ? 'Pinned' : 'Unpinned'} "${parsed.name}".\nBefore: ${before}\n After: ${lines[idx]}`;
   });
+}
+
+// --- Compaction handoff ---
+
+/**
+ * Extract the last N assistant text messages from a messagesToSummarize array,
+ * format as terse bullet points, and append a dated entry to HANDOFF.md.
+ * Prunes the file to retain only the last `handoffKeep` entries.
+ */
+export function writeHandoff(messages, reason, handoffKeep = DEFAULT_HANDOFF_KEEP) {
+  if (handoffKeep === 0) return;
+
+  // Collect assistant text blocks (skip thinking, tool calls, non-assistant roles)
+  const textBlocks = [];
+  for (const msg of messages) {
+    if (msg.role !== 'assistant') continue;
+    const text = msg.content
+      .filter(c => c.type === 'text')
+      .map(c => c.text)
+      .join('')
+      .trim();
+    if (text) textBlocks.push(text);
+  }
+
+  if (textBlocks.length === 0) return;
+
+  // Take the last 3 assistant messages (closest to the compaction cut point)
+  const tail = textBlocks.slice(-3);
+
+  // Convert each block to bullet lines: drop blanks, fences, pure headers
+  const MAX_BULLETS = 15;
+  const bullets = [];
+  for (const block of tail) {
+    for (const raw of block.split('\n')) {
+      if (bullets.length >= MAX_BULLETS) break;
+      const line = raw.trim();
+      if (!line) continue;
+      if (line.startsWith('```')) continue;
+      if (/^#{1,6}\s/.test(line)) continue;  // markdown headers
+      bullets.push('- ' + line.replace(/^[-*]\s+/, '').replace(/\*{1,2}([^*]+)\*{1,2}/g, '$1'));
+    }
+  }
+
+  if (bullets.length === 0) return;
+
+  const entry = `## ${nowIso()} (${reason})\n\n${bullets.join('\n')}\n`;
+
+  ensureMemoryDir();
+  const existing = fs.existsSync(HANDOFF_FILE) ? fs.readFileSync(HANDOFF_FILE, 'utf8') : '';
+  const updated = existing + (existing.endsWith('\n') || !existing ? '' : '\n') + '\n' + entry;
+
+  // Prune: keep only the last handoffKeep `##` sections
+  const sections = updated.split(/(?=^## )/m).filter(s => s.trim());
+  const pruned = sections.slice(-handoffKeep).join('\n');
+  fs.writeFileSync(HANDOFF_FILE, pruned.trimStart() + '\n', 'utf8');
+}
+
+/**
+ * Read the most recent entry from HANDOFF.md for system prompt injection.
+ * Returns empty string if the file doesn't exist or is empty.
+ */
+export function readHandoff() {
+  if (!fs.existsSync(HANDOFF_FILE)) return '';
+  const raw = fs.readFileSync(HANDOFF_FILE, 'utf8');
+  const sections = raw.split(/(?=^## )/m).filter(s => s.trim());
+  return sections.length > 0 ? sections[sections.length - 1].trim() : '';
 }
 
 // --- Display ---
