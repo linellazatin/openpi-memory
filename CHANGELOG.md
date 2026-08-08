@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.0.3] - 2026-08-08
+
+### Added
+
+- **Compaction handoff** — on `session_before_compact`, the last assistant messages before the context cut are extracted, converted to terse bullet points, and appended to `HANDOFF.md`. The most recent entry is injected into the system prompt after MEMORY.md so the agent can resume in-flight work without the user re-explaining. Configurable via `handoff_keep` in `RULES.jsonc` (default: 3 entries retained; 0 disables).
+- **`/memory search <query>`** — case-insensitive substring search across the memory index (name, filename, summary) and all topic file bodies. Results open in the full interactive browser (same pin/unpin, remove, detail view as `/memory`) filtered to matching entries.
+
+### Changed
+
+- **Full box border on all overlays** — replaced bare horizontal rules with complete Unicode box drawing (`┌─┐` / `│ │` / `└─┘`)
+- **Detail view: 6-line content preview** — truncated body shows `… N more lines (filename.md)`; keeps actions always visible
+- **Detail view: title capped at 6 words** — long topic names are shortened with `…`
+- **List view: selection position persisted** — highlight survives detail view, pin/unpin, and remove; removal moves cursor to the next entry
+
 ## [0.0.2] - 2026-08-08
 (RE-PACKAGED) Initial port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory) from opencode to pi coding agent.
 

@@ -117,19 +117,46 @@ Use these instead of asking the agent to edit files directly — they guarantee 
 /memory pin <topic>        → pin an entry
 /memory unpin <topic>      → unpin an entry
 /memory remove <topic>     → remove an index entry
+/memory search <query>     → search index and topic bodies; opens browser filtered to matches
 ```
 
-**`/memory` (no args)** opens a navigable overlay browser:
+**`/memory` (no args)** opens a navigable overlay browser — this is the primary way to pin/unpin and remove entries:
 
 ![ss-memory-list](ss/ss-memory-list.png)
-- **List view** — all topics with date and pin/stale status. `↑↓` to navigate, `enter` to open a topic, `p` to pin/unpin the highlighted entry in-place, `esc` to close.
-- **Detail view** — full Markdown-rendered topic body with metadata. Action list: Pin/Unpin, Remove, Back. `p` hotkey for pin/unpin. Any action or `esc` returns to the list.
+- **List view** — all topics with date and pin/stale status. `↑↓` to navigate, `enter` to open a topic, `p` to pin/unpin the highlighted entry in-place, `esc` to close. Selection position is preserved across pin/unpin, remove, and detail-view round-trips — it no longer resets to the top of the list.
+- **Detail view** — Markdown-rendered topic body (capped at 6 lines; longer entries show a `… N more lines (filename.md)` indicator), metadata, and an action list: Pin/Unpin, Remove, Back. `p` hotkey for pin/unpin. Remove asks for confirmation before touching the index. Any action or `esc` returns to the list.
+
+![ss-memory-detail](ss/ss-memory-detail.png)
 
 **`/memory <text>`** sends the text to the agent with an instruction to call `write_memory`. The agent decides the topic name, filename, summary, and whether to pin it.
 
-`pin`, `unpin`, and `remove` by name run directly in the command handler — no LLM round-trip.
+**`/memory pin/unpin/remove <topic>`** are a chat-input fallback for when you already know the topic name and want to skip opening the browser. They run directly in the command handler — no LLM round-trip.
 
-![ss-memory-detail](ss/ss-memory-detail.png)
+**`/memory search <query>`** does a case-insensitive substring search across the index (name, filename, summary) and all topic file bodies. Matching entries open in the full interactive browser — same pin/unpin, remove, and detail view as `/memory`. No LLM round-trip.
+
+## Compaction handoff
+
+When pi compacts the context — whether triggered manually (`/compact`), automatically at a token threshold, or by a context overflow — the agent loses everything it was working on. The next prompt starts from the compaction summary, which covers what happened but not what was *in progress*.
+
+The compaction handoff addresses this. When `session_before_compact` fires, the extension extracts the last assistant messages from the conversation history that is about to be discarded, converts them to terse bullet points, and writes a dated entry to `~/.pi/agent/memory/HANDOFF.md`. On the next user prompt, that entry is injected into the system prompt alongside `MEMORY.md` — clearly labelled so the agent knows to resume from it. It is injected exactly once per compaction event and then suppressed, so it does not add recurring overhead to subsequent turns.
+
+Example of what gets injected:
+
+```
+## Compaction Handoff
+
+What the agent was working on before the last context compaction.
+Resume from here without asking the user to re-explain.
+
+## 2026-08-08T10:14:22+08:00 (threshold)
+
+- Editing extensions/index.ts to add full box borders to all overlays
+- Replaced DynamicBorder + Container pattern with borderedBox() helper
+- Three overlays updated: confirm, list, detail view
+- Removed DynamicBorder and Container imports
+```
+
+The file is pruned automatically — by default only the last 3 compaction entries are kept. Configure via `handoff_keep` in `RULES.jsonc`. Set to `0` to disable the feature entirely.
 
 ## Auto-injection
 
@@ -173,6 +200,21 @@ Estimates use cl100k-compatible tokenization (~4 chars/token for English prose, 
 | Per index entry (name, filename, ISO datetime, summary) | ~35      |
 
 The per-entry cost is for a typical line with a full ISO datetime stamp and a one-sentence summary. Pinned or stale entries add ~2–3 tokens each.
+
+### Compaction handoff cost — first post-compaction prompt only
+
+The handoff entry is injected exactly once — on the first injected turn after a compaction event — then suppressed for the remainder of the session.
+
+| Component                                                   | ~Tokens  |
+| ------------------------------------------------------------- | ---------- |
+| `## Compaction Handoff` heading + 2-line preamble           | ~30      |
+| Entry header (`## ISO datetime (reason)`)                   | ~15      |
+| Bullet content — typical (5–8 bullets)                     | ~70      |
+| Bullet content — maximum (15 bullets cap)                   | ~180     |
+| **Typical handoff overhead**                                | **~115** |
+| **Maximum handoff overhead**                                | **~225** |
+
+This overhead does not apply on turns where no compaction has occurred. Set `"handoff_keep": 0` in `RULES.jsonc` to disable entirely.
 
 ### Total per injected turn
 
@@ -259,11 +301,13 @@ Higher N saves more tokens but increases the gap between memory rule refreshes. 
   // stale_after_days: 0 = disable age flagging
   "stale_after_days": 180,
   // inject_every_n_turns: 1 = inject on every user prompt
-  "inject_every_n_turns": 5
+  "inject_every_n_turns": 5,
+  // handoff_keep: number of compaction handoff entries to retain in HANDOFF.md; 0 = disable
+  "handoff_keep": 3
 }
 ```
 
-The rule arrays (`always_persist`, `never_persist`, `always_ask`) are rendered to markdown and injected into the system prompt. Config scalars (`max_lines`, `stale_after_days`, `inject_every_n_turns`) are consumed by the extension and never injected. Changes take effect on the next user prompt — no reload required.
+The rule arrays (`always_persist`, `never_persist`, `always_ask`) are rendered to markdown and injected into the system prompt. Config scalars (`max_lines`, `stale_after_days`, `inject_every_n_turns`, `handoff_keep`) are consumed by the extension and never injected. Changes take effect on the next user prompt — no reload required.
 
 ## Index format
 
@@ -308,11 +352,11 @@ This is a pi **extension** packaged as a **pi package** (keyword `pi-package`, i
 Hooks used:
 
 
-| Hook                     | Purpose                                                                       |
-| -------------------------- | ------------------------------------------------------------------------------- |
-| `session_start`          | Bootstrap`memory/` dir, `MEMORY.md`, and `RULES.jsonc`; reset injection state |
-| `before_agent_start`     | Inject`MEMORY.md` + rendered rules into system prompt (once per user prompt)  |
-| `session_before_compact` | Reset injection state so first prompt after compaction re-injects             |
+| Hook                     | Purpose                                                                                          |
+| -------------------------- | -------------------------------------------------------------------------------------------------- |
+| `session_start`          | Bootstrap `memory/` dir, `MEMORY.md`, and `RULES.jsonc`; reset injection state                  |
+| `before_agent_start`     | Inject `MEMORY.md` + rules + latest handoff entry into system prompt (once per user prompt)      |
+| `session_before_compact` | Write compaction handoff to `HANDOFF.md`; reset injection state so next prompt re-injects        |
 
 `before_agent_start` fires at the start of each user prompt, so the next injection point naturally re-reads fresh state. `write_memory` also carries `promptSnippet` and `promptGuidelines` so the model always has a reminder to persist, even on turns where the full memory block is not injected.
 
