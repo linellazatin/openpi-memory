@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.0.4] - 2026-08-09
+
+### Added
+
+- **Auto-resume after threshold compaction** — opt-in nudge (`auto_resume_after_threshold_compaction` in `RULES.jsonc`) + handoff-aware keyword detection to send `"Continue."` when agent finishes a task and threshold compaction fires. Handoff content is scanned for keywords ("need to", "should", "waiting for", "pending", "next", "then") to detect incomplete work - directly complements 0.0.3 `compaction handoff` feature.
+
 ## [0.0.3] - 2026-08-08
 
 ### Added

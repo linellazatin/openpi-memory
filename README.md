@@ -207,6 +207,43 @@ The handoff entry is injected exactly once — on the first injected turn after 
 
 | Component                                                   | ~Tokens  |
 | ------------------------------------------------------------- | ---------- |
+| ISO timestamp + reason header (`## 2026-08-09... (threshold)`) | 12 |
+| Bullet points (last 3 assistant messages, ~10 bullets avg)   | 38 |
+| **Total handoff entry**                                       | **~50** |
+
+## Auto-resume after threshold compaction (opt-in)
+
+When the agent finishes a task and threshold compaction fires, the extension can optionally send a `"Continue."` follow-up message to nudge the agent back into work without requiring user input.
+
+**Two modes:**
+1. **Config-based nudge** — if `auto_resume_after_threshold_compaction: true` in `RULES.jsonc`, sends `"Continue."` after ALL threshold compactions
+2. **Handoff-aware detection** — automatically sends `"Continue."` if the handoff content contains keywords suggesting incomplete work (e.g., "need to", "should", "waiting for", "pending", "next", "then")
+
+**Why it's safe:** Threshold compaction only fires after turns with no tool calls (per `trigger-compact` logic), meaning the agent has finished its current task. The `"Continue."` nudge is appropriate here — it's literally saying "You're done with this task, what's next?"
+
+**Config:**
+
+```jsonc
+{
+  "auto_resume_after_threshold_compaction": false  // enable to always nudge
+}
+```
+
+**When it fires:**
+- Config mode: Any threshold compaction (when `willRetry === false`)
+- Detection mode: When handoff contains continuation keywords (works regardless of config setting)
+
+**To disable:** Set `auto_resume_after_threshold_compaction: false` in `RULES.jsonc`
+
+### Token overhead — auto-resume nudge
+
+| Component | ~Tokens |
+| --------- | -------- |
+| `"Continue."` message | 2 |
+
+Negligible cost; only fires on threshold compaction (not overflow or manual).
+
+## RULES.jsonc
 | `## Compaction Handoff` heading + 2-line preamble           | ~30      |
 | Entry header (`## ISO datetime (reason)`)                   | ~15      |
 | Bullet content — typical (5–8 bullets)                     | ~70      |
@@ -303,11 +340,13 @@ Higher N saves more tokens but increases the gap between memory rule refreshes. 
   // inject_every_n_turns: 1 = inject on every user prompt
   "inject_every_n_turns": 5,
   // handoff_keep: number of compaction handoff entries to retain in HANDOFF.md; 0 = disable
-  "handoff_keep": 3
+  "handoff_keep": 3,
+  // auto_resume_after_threshold_compaction: send "Continue." after threshold compaction; false = off
+  "auto_resume_after_threshold_compaction": false
 }
 ```
 
-The rule arrays (`always_persist`, `never_persist`, `always_ask`) are rendered to markdown and injected into the system prompt. Config scalars (`max_lines`, `stale_after_days`, `inject_every_n_turns`, `handoff_keep`) are consumed by the extension and never injected. Changes take effect on the next user prompt — no reload required.
+The rule arrays (`always_persist`, `never_persist`, `always_ask`) are rendered to markdown and injected into the system prompt. Config scalars (`max_lines`, `stale_after_days`, `inject_every_n_turns`, `handoff_keep`, `auto_resume_after_threshold_compaction`) are consumed by the extension and never injected. Changes take effect on the next user prompt — no reload required.
 
 ## Index format
 

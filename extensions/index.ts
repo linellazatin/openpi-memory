@@ -33,6 +33,7 @@ import {
   readHandoff,
   writeHandoff,
   searchMemory,
+  detectIncompleteTask,
   executeWriteMemory,
   executeRemoveMemory,
   executePinMemory,
@@ -133,6 +134,27 @@ export default function (pi: ExtensionAPI) {
     const rules = parseRules();
     if (rules.handoffKeep > 0) {
       writeHandoff(event.preparation.messagesToSummarize, event.reason, rules.handoffKeep);
+    }
+  });
+
+  // ── compaction_end ───────────────────────────────────────────────────────
+  // Auto-resume after threshold compaction: opt-in nudge + handoff-aware detection
+
+  pi.on('compaction_end', async (event) => {
+    if (event.reason !== 'threshold' || event.willRetry) return;
+
+    const rules = parseRules();
+
+    // Config-based nudge: send "Continue." for ALL threshold compactions if enabled
+    if (rules.autoResumeAfterThreshold) {
+      pi.sendUserMessage('Continue.', { deliverAs: 'followUp' });
+      return;
+    }
+
+    // Handoff-aware detection: send "Continue." if handoff suggests incomplete work
+    const handoff = readHandoff();
+    if (handoff && detectIncompleteTask(handoff)) {
+      pi.sendUserMessage('Continue.', { deliverAs: 'followUp' });
     }
   });
 

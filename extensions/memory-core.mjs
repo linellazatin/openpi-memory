@@ -27,6 +27,7 @@ export const MAX_BYTES = 25 * 1024;
 export const DEFAULT_STALE_DAYS     = 180;
 export const DEFAULT_INJECT_INTERVAL = 5;
 export const DEFAULT_HANDOFF_KEEP   = 3;
+export const DEFAULT_AUTO_RESUME_AFTER_THRESHOLD = false;
 
 // --- Initial file content ---
 
@@ -60,7 +61,9 @@ export const INITIAL_RULES_JSONC = `{
   // inject_every_n_turns: re-inject memory every N user prompts; 1 = every prompt
   "inject_every_n_turns": 5,
   // handoff_keep: number of past compaction handoffs to retain in HANDOFF.md; 0 = disable
-  "handoff_keep": 3
+  "handoff_keep": 3,
+  // auto_resume_after_threshold_compaction: send "Continue." after threshold compaction; false = off
+  "auto_resume_after_threshold_compaction": false
 }
 `;
 
@@ -91,6 +94,7 @@ export function parseRules() {
       staleAfterDays:    Math.max(0,               typeof obj.stale_after_days     === 'number' ? obj.stale_after_days     : DEFAULT_STALE_DAYS),
       injectEveryNTurns: Math.max(1,               typeof obj.inject_every_n_turns  === 'number' ? obj.inject_every_n_turns  : DEFAULT_INJECT_INTERVAL),
       handoffKeep:       Math.max(0,               typeof obj.handoff_keep          === 'number' ? obj.handoff_keep          : DEFAULT_HANDOFF_KEEP),
+      autoResumeAfterThreshold: typeof obj.auto_resume_after_threshold_compaction === 'boolean' ? obj.auto_resume_after_threshold_compaction : DEFAULT_AUTO_RESUME_AFTER_THRESHOLD,
     };
   } catch {
     return {
@@ -101,13 +105,14 @@ export function parseRules() {
       staleAfterDays:    DEFAULT_STALE_DAYS,
       injectEveryNTurns: DEFAULT_INJECT_INTERVAL,
       handoffKeep:       DEFAULT_HANDOFF_KEEP,
+      autoResumeAfterThreshold: DEFAULT_AUTO_RESUME_AFTER_THRESHOLD,
     };
   }
 }
 
 /**
  * Render parsed rules to markdown for system prompt injection.
- * Config scalars (max_lines, stale_after_days, inject_every_n_turns) are
+ * Config scalars (max_lines, stale_after_days, inject_every_n_turns, auto_resume_after_threshold_compaction) are
  * never rendered — they are consumed by the extension, not the LLM.
  */
 export function renderRulesToMarkdown(rules) {
@@ -124,6 +129,31 @@ export function renderRulesToMarkdown(rules) {
   }
 
   return parts.join('\n\n');
+}
+
+// --- Compaction handoff ---
+
+/**
+ * Detect whether handoff content suggests an incomplete task.
+ * Looks for keywords indicating continuation needs.
+ */
+export function detectIncompleteTask(handoffText) {
+  const lower = handoffText.toLowerCase();
+  const keywords = [
+    /need to/i,
+    /should/i,
+    /waiting for/i,
+    /pending/i,
+    /next/i,
+    /then/i,
+    /not done/i,
+    /incomplete/i,
+    /unfinished/i,
+  ];
+  for (const kw of keywords) {
+    if (kw.test(lower)) return true;
+  }
+  return false;
 }
 
 // --- File I/O helpers ---
