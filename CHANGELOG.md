@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.0] - 2026-08-13
+
+### Added
+
+- **Memory Types taxonomy** in `SKILL.md` — 4-type organizing convention (`user`, `feedback`, `project`, `reference`) with per-type guidance on when to save, body structure, and the `Rule → Why → How to apply` scaffold for `feedback`/`project` types.
+- **Proactive save triggers** in `SKILL.md` — type-driven "save proactively when..." list replaces vague "when in doubt" prose.
+- **Freshness verification** section in `SKILL.md` — verify file paths, function names, and config flags against the codebase before acting on memory.
+- **Cross-linking convention** in `SKILL.md` — `[[slug]]` syntax to reference related topic files in body content.
+- **`mode` parameter** on `write_memory` (`"append"` | `"replace"`, default `"append"`). `"replace"` overwrites the topic body preserving frontmatter — mirrors `overwrite: true` semantics. Backwards compatible: `overwrite: true` still works as a deprecated alias.
+- **Pin-preservation note** in `SKILL.md` — `write_memory(pin: false)` on an already-pinned entry does not unpin it; must use `pin_memory({ pin: false })` explicitly.
+- **TUI browser section** in `SKILL.md` — keybindings and usage for the `/memory` interactive browser and `/memory search`.
+
+### Changed
+
+- **`never_persist` defaults** rewritten to principle-based exclusions: code patterns derivable from codebase, git history, debugging fix recipes, ephemeral task state, things in AGENTS.md/CLAUDE.md, large code blocks. Existing `RULES.jsonc` on disk is unaffected — only fresh installs receive the new defaults.
+- **`maintainIndex` two-pass rewrite** — pass 1 builds `Map<filename, best_line>` (most-recent date wins, orphans excluded); pass 2 rebuilds in original order. No null values in result, no `.filter()` call. Behavior equivalent for well-formed indexes.
+- **`readMemoryIndex` byte/line truncation** split into two separate messages: line-limit (`exceeds N-line limit`) and byte-limit (`exceeds 25 KB size limit`).
+
+### Fixed
+
+- `INITIAL_RULES_JSONC` had duplicate `max_lines`, `stale_after_days`, `inject_every_n_turns` keys appended after `auto_resume_after_threshold_compaction` — removed.
+- `compaction_end` handoff-aware detection now correctly scoped to `reason === 'threshold' && !willRetry` (previously fired on all compaction reasons including manual and overflow).
+- Removed unused `DEFAULT_AUTO_RESUME_AFTER_THRESHOLD` local const in `index.ts`.
+- **TUI browser: removed entry persisted in list after remove (BUG)** — `browseEntries` used `?? e` fallback when re-reading the index after a mutation, which re-inserted removed entries (their filename is gone from the index so `byFile.get()` returned `undefined`, triggering the fallback). Fixed by dropping the fallback and filtering `undefined` — removed entries now disappear from the list immediately on the next loop iteration.
+
 ## [0.0.4] - 2026-08-09
 
 ### Added

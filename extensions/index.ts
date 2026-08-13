@@ -13,6 +13,7 @@
  *   session_start          — bootstrap memory dir + files; reset injection state
  *   before_agent_start    — inject memory + rules into system prompt (once per user prompt)
  *   session_before_compact — reset injection state so next prompt always re-injects
+ *   compaction_end         — auto-resume nudge after threshold compaction
  *
  * Tools registered: write_memory, remove_memory, pin_memory
  * Command registered: /memory
@@ -178,7 +179,7 @@ export default function (pi: ExtensionAPI) {
       content:  Type.String({ description: 'The content to write or append to the topic file' }),
       summary:  Type.String({ description: 'One-line summary for the MEMORY.md index entry' }),
       pin:      Type.Optional(Type.Boolean({ description: 'Pin this entry so it is never a cleanup candidate' })),
-      overwrite: Type.Optional(Type.Boolean({ description: 'true = replace the full topic body with this content (use for state entries like hardware specs or config); false (default) = append under a new date heading (use for logs, fixes, discoveries)' })),
+      mode:     Type.Optional(Type.Union([Type.Literal('append'), Type.Literal('replace')], { description: '"append" (default) adds content under a dated heading. "replace" overwrites the body, preserving frontmatter — use for state entries like hardware specs or config.' })),
     }),
     async execute(_toolCallId, params) {
       const text = await executeWriteMemory(params);
@@ -267,7 +268,9 @@ export default function (pi: ExtensionAPI) {
           // For filtered sets (search), remap by filename to pick up fresh pin/stale state.
           const all = readIndexEntries();
           const byFile = new Map(all.map(e => [e.filename, e]));
-          const entries = initialEntries.map(e => byFile.get(e.filename) ?? e);
+          const entries = initialEntries
+            .map(e => byFile.get(e.filename))
+            .filter((e): e is NonNullable<typeof e> => !!e);
           focusedIndex = Math.min(focusedIndex, Math.max(0, entries.length - 1));
 
           if (entries.length === 0) {
