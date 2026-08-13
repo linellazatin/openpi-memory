@@ -44,9 +44,11 @@ export const INITIAL_RULES_JSONC = `{
   ],
   // What to never persist
   "never_persist": [
-    "Session-specific context that won't apply to future sessions",
-    "Assumed or inferred preferences — only persist what the user has explicitly stated",
-    "Large blocks of code — summarize instead, or link to the file path"
+    "Code patterns derivable from the codebase or git history",
+    "Debugging fix recipes — the fix is in the commit, not in memory",
+    "Ephemeral task state that won't apply next session",
+    "Things already documented in AGENTS.md or CLAUDE.md",
+    "Large code blocks — summarize or link to the file path instead"
   ],
   // Always ask before persisting these (non-overridable)
   "always_ask": [
@@ -175,7 +177,11 @@ export function readMemoryIndex(maxLines) {
     }
     const raw = fs.readFileSync(MEMORY_INDEX, 'utf8');
     const lines = raw.split('\n');
-    if (lines.length > maxLines || Buffer.byteLength(raw) > MAX_BYTES) {
+    if (Buffer.byteLength(raw) > MAX_BYTES) {
+      const truncated = lines.slice(0, maxLines).join('\n');
+      return truncated + `\n\n<!-- memory truncated: MEMORY.md exceeds 25 KB size limit; shorten the index -->`;
+    }
+    if (lines.length > maxLines) {
       const truncated = lines.slice(0, maxLines).join('\n');
       return truncated + `\n\n<!-- memory truncated: MEMORY.md exceeds ${maxLines}-line limit; shorten the index -->`;
     }
@@ -285,59 +291,54 @@ export function upsertIndexLine(lines, filename, name, summary, pin) {
  */
 export function maintainIndex(lines, config) {
   const { staleAfterDays } = config;
-  // linear scan, O(n) per call; n is bounded by max_lines (≤500)
-  const seen = new Map(); // filename → result array index
-  const result = [];
 
-  for (const line of lines) {
-    const parsed = parseIndexLine(line);
-    if (!parsed) {
-      result.push(line);
-      continue;
-    }
-
+  // Pass 1: build Map<filename, {line, rest, parsed, idx}> — most-recent date wins, orphans excluded.
+  const ISO_DATE_RE = /(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})?)/;
+  const best = new Map();
+  for (let i = 0; i < lines.length; i++) {
+    const parsed = parseIndexLine(lines[i]);
+    if (!parsed) continue;
     const { filename } = parsed;
-    let rest = parsed.rest;
-
-    // Orphan: topic file no longer exists
-    if (!fs.existsSync(path.join(MEMORY_DIR, filename))) continue;
-
-    // Duplicate: keep entry with newer date
-    if (seen.has(filename)) {
-      const existingIdx = seen.get(filename);
-      const existingLine = result[existingIdx];
-      const existingDate = (existingLine?.match(/(\d{4}-\d{2}-\d{2})/) ?? [])[1] ?? '';
-      const thisDate     = (rest.match(/(\d{4}-\d{2}-\d{2})/) ?? [])[1] ?? '';
-      if (thisDate > existingDate) {
-        result[existingIdx] = null; // evict older
-        seen.set(filename, result.length);
-      } else {
-        continue; // skip this one (existing is newer)
-      }
+    if (!fs.existsSync(path.join(MEMORY_DIR, filename))) continue; // orphan
+    const thisDate = (parsed.rest.match(ISO_DATE_RE) ?? [])[1] ?? '';
+    const existing = best.get(filename);
+    if (!existing) {
+      best.set(filename, { line: lines[i], rest: parsed.rest, parsed, idx: i });
     } else {
-      seen.set(filename, result.length);
+      const existDate = (existing.rest.match(ISO_DATE_RE) ?? [])[1] ?? '';
+      if (thisDate > existDate) best.set(filename, { line: lines[i], rest: parsed.rest, parsed, idx: i });
     }
+  }
 
-    // Stale stamping / healing
+  // Pass 2: rebuild in original order — emit best entry once, apply stale stamping.
+  const emitted = new Set();
+  const result = [];
+  for (let i = 0; i < lines.length; i++) {
+    const parsed = parseIndexLine(lines[i]);
+    if (!parsed) { result.push(lines[i]); continue; }
+    const { filename } = parsed;
+    if (!best.has(filename)) continue;       // orphan
+    if (emitted.has(filename)) continue;     // duplicate — skip
+    if (best.get(filename).idx !== i) continue; // not the best occurrence
+    emitted.add(filename);
+
+    let rest = parsed.rest;
     const isPinned = rest.includes('[pin]');
     if (!isPinned && staleAfterDays > 0) {
-      // Match full ISO datetime (2026-08-07T01:02:50+08:00) or legacy date-only (2026-08-06)
-      const dateMatch = rest.match(/(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})?)/);
+      const dateMatch = rest.match(ISO_DATE_RE);
       if (dateMatch) {
         const age = daysSince(dateMatch[1]);
         if (age !== null && age > staleAfterDays) {
-          if (!rest.includes('[stale?]'))
-            rest = rest.replace(dateMatch[1], `${dateMatch[1]} [stale?]`);
+          if (!rest.includes('[stale?]')) rest = rest.replace(dateMatch[1], `${dateMatch[1]} [stale?]`);
         } else {
           rest = rest.replace(' [stale?]', '');
         }
       }
     }
-
     result.push(parsed.prefix + parsed.name + parsed.mid + rest);
   }
 
-  return result.filter(l => l !== null);
+  return result;
 }
 
 /**
@@ -417,7 +418,9 @@ export async function withLock(fn) {
 // --- Tool execute functions ---
 // Called by both pi tools (index.ts) and /memory command handler directly.
 
-export async function executeWriteMemory({ topic, content, summary, pin = false, overwrite = false }) {
+export async function executeWriteMemory({ topic, content, summary, pin = false, mode = 'append', overwrite }) {
+  // backwards compat: overwrite: true maps to mode: 'replace'
+  const replace = mode === 'replace' || overwrite === true;
   return withLock(() => {
     ensureMemoryDir();
 
@@ -444,7 +447,7 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
       const frontmatter =
         `---\nname: ${topic}\ndescription: ${summary}\ncreated: ${dt}\nlast_updated: ${dt}\nmetadata:\n  node_type: memory\n---\n\n`;
       fs.writeFileSync(topicPath, frontmatter + content + '\n', 'utf8');
-    } else if (overwrite) {
+    } else if (replace) {
       // Replace body content; preserve frontmatter and update last_updated
       const existing = fs.readFileSync(topicPath, 'utf8');
       const updated = updateFrontmatterLastUpdated(existing, dt);
