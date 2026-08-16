@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-08-16
+
+### Added
+- `shared_dir` config key (boolean, default `false`) — opt-in: when `true`, redirects the memory index and topic files from `~/.pi/agent/memory/` to `~/.agents/memory/`, a location intended to be shared across tools using the same on-disk format (e.g. openclaude-memory for opencode)
+- One-time local carry-over when `shared_dir` first resolves `true`: existing index + topic files are backed up to `~/.pi/agent/memory-backup-before-shared-dir/`, then copied (never moved) into the shared directory; the legacy directory and its files are never modified or deleted; existing files at the destination are never overwritten; runs at most once
+- Real cross-process advisory file lock (`.lock` file, atomic `wx` create, ~10s staleness reclaim) replacing the previous in-process-only mutex — needed once the memory directory can be shared by more than one process
+- Atomic writes for `MEMORY.md` and topic files (write to temp file, then rename) — removes the risk of a partial/corrupted file on crash or lock failure mid-write
+- `getMemoryDir()` / `getMemoryIndex()` exports — resolve the active storage location based on `shared_dir`; replace the old fixed `MEMORY_DIR` / `MEMORY_INDEX` constants
+
+### Changed
+- Config file renamed and relocated: `RULES.jsonc` (inside `memory/`) → `memory.jsonc` (one level up, sibling of `memory/`) — config now always stays per-tool regardless of `shared_dir`
+- `parseRules()` falls back to the legacy `RULES.jsonc` path when `memory.jsonc` doesn't exist yet: backs it up to `RULES.jsonc.bak`, then copies its content forward; the legacy file is never deleted or moved
+- `maintainIndex()` now accepts an optional `memoryDir` parameter (defaults to the resolved active directory) instead of referencing a fixed constant
+
 ## [0.2.0] - 2026-08-16
 
 ### Added

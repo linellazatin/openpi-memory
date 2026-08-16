@@ -9,6 +9,11 @@ A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory)
 
 > Considering that vast majority of people who use **pi** literally creates their own extensions, I'm shooting my shot on this memory extension that I believe is good enough to be your *ultra-simplest* memory handler.
 
+> ## v0.3.0 - MAJOR structural change
+> - `shared_dir` now a thing in the [config](#memoryjsonc) - you can opt-in on putting your memory entries (and index) to ~/.agents/memory and be SHARED between our "openlines" (lol) memory handlers for opencode ([openclaude-memory](https://github.com/linellazatin/openclaude-memory)) & pi coding agent ([openpi-memory](https://github.com/linellazatin/openpi-memory)); opting out (toggling to false) would just fallback to using our original ~/.pi/agent/memory for index and entries, but would still use the memory.jsonc config file starting this `0.3.0`.
+> 
+> see [CHANGELOG](CHANGELOG.md) for more details
+
 ## Why
 
 I built this because I genuinely like how Claude Code handles memory: no complex algorithms, no external LLM for heavy lifting, no vector databases. It just works — the agent reads a markdown file and acts on it. Simple, transparent, effective.
@@ -90,18 +95,98 @@ Token cost. At 300 index entries, a single injection is ~10,800+ tokens. At `inj
 ## How it works
 
 ```
-~/.pi/agent/memory/
+~/.pi/agent/memory/          # or ~/.agents/memory/ if shared_dir: true
 ├── MEMORY.md              # index — injected into every session automatically
-├── RULES.jsonc            # persist rules + config
-├── HANDOFF.md             # compaction handoff entries (auto-managed)
+├── HANDOFF.md             # compaction handoff entries (auto-managed, always local)
 └── <topic>.md             # per-topic detail files, created by write_memory
+
+~/.pi/agent/memory.jsonc    # persist rules + config — always per-tool, never shared
 ```
 
 All files are plain text. You can read, edit, and delete them at any time. The default location respects `PI_CODING_AGENT_DIR` if set (pi's config-dir override).
 
-`MEMORY.md` is the index that gets injected into the system prompt. Each entry points to a topic file. Topic files hold the full content — they are read on-demand, not injected wholesale. `RULES.jsonc` holds your persist rules and config scalars. `HANDOFF.md` is managed automatically by the compaction handoff feature.
+`MEMORY.md` is the index that gets injected into the system prompt. Each entry points to a topic file. Topic files hold the full content — they are read on-demand, not injected wholesale. `memory.jsonc` holds your persist rules and config scalars. `HANDOFF.md` is managed automatically by the compaction handoff feature.
 
-On the first user prompt of each session, `MEMORY.md` and the rendered rules from `RULES.jsonc` are injected into the system prompt. They are re-injected every `inject_every_n_turns` prompts thereafter (default: 5). After context compaction, injection state resets so the very next prompt always re-injects.
+On the first user prompt of each session, `MEMORY.md` and the rendered rules from `memory.jsonc` are injected into the system prompt. They are re-injected every `inject_every_n_turns` prompts thereafter (default: 5). After context compaction, injection state resets so the very next prompt always re-injects.
+
+### Shared storage across tools (`shared_dir`)
+
+Set `"shared_dir": true` in `memory.jsonc` to move the index and topic files to `~/.agents/memory/` — a location intended to be shared with other tools that use the same on-disk format (e.g. [openclaude-memory](https://github.com/) for opencode). `memory.jsonc` itself and `HANDOFF.md` are never affected by this setting; they always stay in pi's own agent directory.
+
+The first time `shared_dir` resolves to `true`, if `~/.pi/agent/memory/` already has an index and `~/.agents/memory/` doesn't yet, the extension performs a one-time local carry-over: it backs up your existing index and topic files to `~/.pi/agent/memory-backup-before-shared-dir/`, then copies (never moves) them into the shared directory. Your original files in `~/.pi/agent/memory/` are never modified or deleted — the backup and the copy are both additive. This only runs once; toggling `shared_dir` off and back on later does not repeat it.
+
+Cross-process writes to the shared directory are protected by a real filesystem lock (not just an in-process mutex), and index/topic-file writes are atomic (write-to-temp then rename), so a pi session and another tool's session can safely write to the same shared directory without corrupting it.
+
+### First run: fresh install
+
+On a brand-new install, nothing exists on disk yet. Here's exactly what happens, in order:
+
+1. **Extension loads.** Hooks and tools register. No filesystem I/O happens yet.
+2. **`session_start` fires.** `parseRules()` runs first: `~/.pi/agent/memory.jsonc` doesn't exist and neither does a legacy `RULES.jsonc`, so it writes fresh defaults to `~/.pi/agent/memory.jsonc`. Then `readMemoryIndex()` runs: it resolves the memory dir (`shared_dir` defaults to `false`, so `~/.pi/agent/memory/`), creates that directory, and writes an empty `MEMORY.md` (`# Memory Index`).
+3. **You send your first prompt.** `before_agent_start` fires: it reads back the (empty) index and the rendered rules, and injects `## Global Memory` and `## Memory Rules` into the system prompt. No `HANDOFF.md` exists yet, so no `## Compaction Handoff` block is added.
+
+Resulting state:
+
+```
+~/.pi/agent/
+├── memory.jsonc          # fresh defaults
+└── memory/
+    └── MEMORY.md          # "# Memory Index" — empty, no entries yet
+```
+
+The agent's first turn sees the empty index and your (default) persist rules, ready to start calling `write_memory`.
+
+### First run: upgrading from a pre-0.3.0 install
+
+If you already have memories and a config from before 0.3.0, nothing you have is touched destructively — the upgrade only adds files.
+
+Starting state:
+
+```
+~/.pi/agent/memory/
+├── MEMORY.md              # your real entries
+├── RULES.jsonc            # your custom config
+├── HANDOFF.md             # if a compaction happened recently
+└── <topic>.md files...
+```
+
+1. **`session_start` fires.** `parseRules()` finds no `~/.pi/agent/memory.jsonc`, but finds your legacy `~/.pi/agent/memory/RULES.jsonc`. It backs that up to `RULES.jsonc.bak` (one-time — skipped on future runs) and copies its content forward into the new `memory.jsonc`. Your original `RULES.jsonc` is never deleted, moved, or modified. `readMemoryIndex()` then resolves the memory dir — still `~/.pi/agent/memory/`, since `shared_dir` isn't in your old config and defaults to `false` — and finds your real `MEMORY.md` already there, so it just reads it back untouched.
+2. **Your first prompt after upgrading.** Injection works exactly as before: your real index, your custom rules, and (if present) your existing `HANDOFF.md` entry are all injected, unchanged.
+
+Resulting state — two new files added, nothing removed:
+
+```
+~/.pi/agent/
+├── memory.jsonc            # NEW — copy of your old config
+└── memory/
+    ├── MEMORY.md            # unchanged
+    ├── RULES.jsonc           # unchanged, now inert
+    ├── RULES.jsonc.bak       # NEW — safety backup
+    ├── HANDOFF.md            # unchanged
+    └── <topic>.md files...   # unchanged
+```
+
+Net effect: the agent's first turn after upgrading behaves exactly as it did before. Your memory content, rules, and handoff behavior are all preserved as-is.
+
+**If you then opt into `shared_dir: true`** by editing `memory.jsonc`, the next `getMemoryDir()` call triggers a one-time carry-over: `MEMORY.md` and your topic files (never `HANDOFF.md`, which always stays local) are backed up to `~/.pi/agent/memory-backup-before-shared-dir/`, then copied — never moved — into `~/.agents/memory/`. Your original `~/.pi/agent/memory/` directory is left fully intact:
+
+```
+~/.pi/agent/
+├── memory.jsonc
+├── memory-backup-before-shared-dir/      # NEW — one-time backup, no HANDOFF.md
+│   ├── MEMORY.md
+│   └── <topic>.md files...
+└── memory/                                # untouched, still fully intact
+    ├── MEMORY.md
+    ├── RULES.jsonc
+    ├── RULES.jsonc.bak
+    ├── HANDOFF.md                        # stays local, never migrates
+    └── <topic>.md files...
+
+~/.agents/memory/                          # NEW — active storage now
+├── MEMORY.md
+└── <topic>.md files...
+```
 
 ## Tools
 
@@ -150,7 +235,7 @@ Use these instead of asking the agent to edit files directly — they guarantee 
 
 When triggered via `consolidate_on_compact`, the extension feeds pi's already-generated compaction summary directly to the agent instead of asking it to re-scan the full conversation — saving one LLM scan turn. When invoked manually via `/memory consolidate`, the agent scans the live conversation history.
 
-Cost: one LLM round-trip (extraction only when via compaction; scan + extract when manual). Use at natural breakpoints — before closing a long session, before switching contexts, or any time you want the session's learnings captured. Enable `consolidate_on_compact: true` in `RULES.jsonc` to run consolidation automatically after threshold compaction.
+Cost: one LLM round-trip (extraction only when via compaction; scan + extract when manual). Use at natural breakpoints — before closing a long session, before switching contexts, or any time you want the session's learnings captured. Enable `consolidate_on_compact: true` in `memory.jsonc` to run consolidation automatically after threshold compaction.
 
 ## Compaction handoff
 
@@ -174,14 +259,14 @@ Resume from here without asking the user to re-explain.
 - Removed DynamicBorder and Container imports
 ```
 
-The file is pruned automatically — by default only the last 3 compaction entries are kept. Configure via `handoff_keep` in `RULES.jsonc`. Set to `0` to disable the feature entirely.
+The file is pruned automatically — by default only the last 3 compaction entries are kept. Configure via `handoff_keep` in `memory.jsonc`. Set to `0` to disable the feature entirely.
 
 ## Auto-resume after threshold compaction (opt-in)
 
 When the agent finishes a task and threshold compaction fires, the extension can optionally send a `"Continue."` follow-up message to nudge the agent back into work without requiring user input.
 
 **Two modes:**
-1. **Config-based nudge** — if `auto_resume_after_threshold_compaction: true` in `RULES.jsonc`, sends `"Continue."` after ALL threshold compactions.
+1. **Config-based nudge** — if `auto_resume_after_threshold_compaction: true` in `memory.jsonc`, sends `"Continue."` after ALL threshold compactions.
 2. **Handoff-aware detection** — automatically sends `"Continue."` if the handoff content contains keywords suggesting incomplete work (e.g. "need to", "should", "waiting for", "pending", "next", "then"). Works regardless of the config setting.
 
 **Why it's safe:** Threshold compaction only fires after turns with no tool calls, meaning the agent has finished its current task. The nudge is appropriate here — it's saying "you finished that task, what's next?"
@@ -192,7 +277,7 @@ When the agent finishes a task and threshold compaction fires, the extension can
 
 Both modes are gated on `reason === 'threshold' && !willRetry` — manual `/compact` and overflow compactions never trigger it.
 
-`consolidate_on_compact: true` in `RULES.jsonc` supersedes both modes — when consolidation is enabled, it fires instead of the plain `"Continue."` nudge. The extension uses pi's already-generated compaction summary as input (captured at `session_compact`), so the agent only needs to extract facts — no full conversation scan.
+`consolidate_on_compact: true` in `memory.jsonc` supersedes both modes — when consolidation is enabled, it fires instead of the plain `"Continue."` nudge. The extension uses pi's already-generated compaction summary as input (captured at `session_compact`), so the agent only needs to extract facts — no full conversation scan.
 
 ## Index format
 
@@ -247,7 +332,7 @@ Estimates use cl100k-compatible tokenization (~4 chars/token for English prose, 
 | Component                                               | ~Tokens  |
 | ------------------------------------------------------- | -------- |
 | `## Global Memory` heading, preamble, memory dir path   | 59       |
-| `## Memory Rules` heading, preamble, RULES.jsonc path   | 45       |
+| `## Memory Rules` heading, preamble, memory.jsonc path   | 45       |
 | Default rules content (3 sections, 11 bullets)          | 157      |
 | `# Memory Index` header                                 | 4        |
 | **Fixed injection overhead**                            | **~265** |
@@ -268,7 +353,7 @@ The handoff entry is injected exactly once — on the first prompt after a compa
 | **Typical handoff overhead**                                   | **~115** |
 | **Maximum handoff overhead**                                   | **~225** |
 
-Set `"handoff_keep": 0` in `RULES.jsonc` to disable entirely.
+Set `"handoff_keep": 0` in `memory.jsonc` to disable entirely.
 
 ### Auto-resume nudge cost
 
@@ -334,7 +419,7 @@ Hooks used:
 
 | Hook                     | Purpose                                                                                     |
 | ------------------------ | ------------------------------------------------------------------------------------------- |
-| `session_start`          | Bootstrap `memory/` dir, `MEMORY.md`, and `RULES.jsonc`; reset injection state             |
+| `session_start`          | Bootstrap `memory/` dir, `MEMORY.md`, and `memory.jsonc`; reset injection state             |
 | `before_agent_start`     | Inject `MEMORY.md` + rules + latest handoff entry into system prompt (once per user prompt) |
 | `session_before_compact` | Write compaction handoff to `HANDOFF.md`; reset injection state so next prompt re-injects  |
 | `compaction_end`         | Auto-resume nudge: send `"Continue."` on threshold compaction if task was incomplete        |
@@ -359,12 +444,48 @@ For compact or edge models, `/memory <text>` explicit commands are always more r
 ## Known limitations
 
 - Module-level injection state (`_injectedOnce`, `_turnCount`) is process-global. Safe for the standard single-user pi session; upgrade to a per-session Map if multi-session support is needed in future.
-- Manual edits to `MEMORY.md` or `RULES.jsonc` made between user prompts are picked up on the next `before_agent_start` call (no cache to invalidate). This is by design.
+- Manual edits to `MEMORY.md` or `memory.jsonc` made between user prompts are picked up on the next `before_agent_start` call (no cache to invalidate). This is by design.
 - The `/memory` browser's `[p]` hotkey tracks the focused item by mirroring `↑↓` key presses. If the SelectList's internal cursor drifts (e.g. via search filtering), `[p]` may act on a different entry than visually selected. Workaround: open the detail view with `enter` and use the action list there.
 
-## RULES.jsonc
+## FAQ (post-0.3.0)
 
-`~/.pi/agent/memory/RULES.jsonc` is created with defaults on first run. It is a JSON file with comment support (`//` line comments are valid):
+Questions that came up while testing the `shared_dir` migration on a real, already-populated install.
+
+**Q: I just upgraded from a pre-0.3.0 version. Did anything of mine get deleted or overwritten?**
+No. The config rename (`RULES.jsonc` → `memory.jsonc`) and the `shared_dir` carry-over are both strictly additive — they only ever create new files or copy existing ones. Nothing pre-existing is ever deleted, moved, or overwritten in place. See [First run: upgrading from a pre-0.3.0 install](#how-it-works) for the exact file-by-file trace.
+
+**Q: How do I check whether I'm currently opted in to `shared_dir`?**
+Read the `shared_dir` value directly from `~/.pi/agent/memory.jsonc` — it's the only place this is configured, and it's always read fresh on every call (no caching). You can also infer it indirectly: if `~/.agents/memory/MEMORY.md` exists, `shared_dir` has been `true` at least once.
+
+**Q: I opted in to `shared_dir`. Where did my memories go — are my old files gone?**
+Your old files are untouched at `~/.pi/agent/memory/`. Opting in copies (never moves) `MEMORY.md` and topic files into `~/.agents/memory/`, and backs the originals up a second time to `~/.pi/agent/memory-backup-before-shared-dir/` before doing so. `HANDOFF.md` is deliberately excluded from both the shared dir and the backup — it always stays at `~/.pi/agent/memory/HANDOFF.md`, since compaction handoff is a pi-only feature, not part of the shared cross-tool format.
+
+**Q: If I opt in, then opt out, then opt in again — does everything stay in sync?**
+**No — this is the biggest watch-out.** Toggling `shared_dir` is a one-time, one-directional migration, not a live sync:
+- The carry-over from `~/.pi/agent/memory/` → `~/.agents/memory/` only ever runs once, guarded by "does the shared `MEMORY.md` already exist." Once it's run, it never runs again, even if you toggle off and back on.
+- There is **no reverse migration**. Opting out doesn't copy anything from `~/.agents/memory/` back to `~/.pi/agent/memory/` — it just changes which directory gets read/written going forward.
+- This means the two directories can silently drift apart: writes made while `shared_dir: true` are invisible once you flip it back to `false`, and vice versa. Nothing is deleted, but whichever directory isn't currently active becomes a stale snapshot.
+
+**What to do about it:** treat `shared_dir` as a deliberate one-way move, not a togglable setting you flip back and forth casually. If you do need to reconcile after toggling, diff `MEMORY.md` and the topic files between `~/.pi/agent/memory/` and `~/.agents/memory/` yourself and manually copy over whatever's missing — the extension will not do this for you.
+
+**Q: Does switching `shared_dir` also affect my `memory.jsonc` config, or my persist rules?**
+No. `memory.jsonc` (config) and `HANDOFF.md` (compaction handoff) are fixed, pi-specific paths that are **never** affected by `shared_dir` — only the location of `MEMORY.md` and topic files changes. There's exactly one config file regardless of `shared_dir`'s value, so there's nothing to keep "in sync" on the config side — it's always already current.
+
+**Q: What's `RULES.jsonc.bak` for, and can I delete it?**
+It's a one-time safety backup of your legacy `RULES.jsonc`, created automatically the first time `memory.jsonc` was bootstrapped from it. It's inert afterward — nothing reads it again. Safe to keep indefinitely for peace of mind, or delete it once you've confirmed `memory.jsonc` has everything you expect.
+
+**Q: I have two config files now (`memory.jsonc` and the old `RULES.jsonc`). Which one is active?**
+`memory.jsonc` is the only one ever read after the initial migration. `~/.pi/agent/memory/RULES.jsonc` (and its `.bak`) are frozen historical snapshots from the migration moment — editing them does nothing. Always edit `~/.pi/agent/memory.jsonc`.
+
+**Q: I edited `memory.jsonc` directly — will my changes get overwritten?**
+No. `memory.jsonc` is only ever written by the extension when it doesn't exist yet (fresh install or first-time legacy fallback). Once it exists, the extension only reads it — your manual edits persist and take effect on the very next user prompt.
+
+**Q: Does the shared directory lock/atomic-write behavior protect me from corruption if another tool writes to `~/.agents/memory/` at the same time?**
+Yes, on the pi side — writes are serialized through a real filesystem advisory lock (not just an in-process mutex) and applied atomically (write-to-temp-then-rename). This protects against corruption from concurrent pi sessions, and from any other tool that also honors the same lock convention. It does **not** guarantee safety against a tool that ignores the lock file entirely and writes directly — that's a property of the other tool's implementation, not something this extension can enforce on its own.
+
+## memory.jsonc
+
+`~/.pi/agent/memory.jsonc` is created with defaults on first run. It is a JSON file with comment support (`//` line comments are valid). If you're upgrading from an older version, the legacy `~/.pi/agent/memory/RULES.jsonc` is read as a fallback, backed up to `RULES.jsonc.bak` alongside it, and copied forward automatically — the legacy file itself is never deleted or moved.
 
 ```jsonc
 {
@@ -401,11 +522,14 @@ For compact or edge models, `/memory <text>` explicit commands are always more r
   // auto_resume_after_threshold_compaction: send "Continue." after threshold compaction; false = off
   "auto_resume_after_threshold_compaction": false,
   // consolidate_on_compact: run /memory consolidate after threshold compaction instead of plain "Continue."; false = off
-  "consolidate_on_compact": false
+  "consolidate_on_compact": false,
+  // shared_dir: redirect the memory index and topic files to ~/.agents/memory/, shared across tools
+  // that use the same on-disk format. Does not affect where this config file itself lives. false = off
+  "shared_dir": false
 }
 ```
 
-The rule arrays (`always_persist`, `never_persist`, `always_ask`) are rendered to markdown and injected into the system prompt. Config scalars (`max_lines`, `stale_after_days`, `inject_every_n_turns`, `handoff_keep`, `auto_resume_after_threshold_compaction`, `consolidate_on_compact`) are consumed by the extension and never injected. Changes take effect on the next user prompt — no reload required.
+The rule arrays (`always_persist`, `never_persist`, `always_ask`) are rendered to markdown and injected into the system prompt. Config scalars (`max_lines`, `stale_after_days`, `inject_every_n_turns`, `handoff_keep`, `auto_resume_after_threshold_compaction`, `consolidate_on_compact`, `shared_dir`) are consumed by the extension and never injected. Changes take effect on the next user prompt — no reload required.
 
 ## Install
 
