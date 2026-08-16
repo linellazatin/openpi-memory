@@ -4,8 +4,15 @@
  * Platform-agnostic memory logic. No pi imports — importable by both the
  * extension (via jiti) and the smoke test (plain node).
  *
- * Storage path respects PI_CODING_AGENT_DIR (pi's config-dir override).
- * Set it before importing this module; the constants are fixed at load time.
+ * Storage paths respect two env overrides (both set before importing this module):
+ *   PI_CODING_AGENT_DIR    — pi's own config-dir override (fixed at load time).
+ *   PI_SHARED_MEMORY_HOME  — override for the shared-dir home root (test isolation only;
+ *                            defaults to the real os.homedir()).
+ *
+ * The memory index/topic-file directory is NOT fixed at load time — it depends on the
+ * `shared_dir` flag inside memory.jsonc, so it is resolved fresh via getMemoryDir() on
+ * every call. MEMORY_RULES (config path) and HANDOFF_FILE are fixed, pi-specific paths
+ * that never move regardless of shared_dir.
  */
 
 import fs from 'fs';
@@ -15,10 +22,25 @@ import path from 'path';
 // --- Storage paths ---
 
 const AGENT_DIR = process.env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), '.pi', 'agent');
-export const MEMORY_DIR = path.join(AGENT_DIR, 'memory');
-export const MEMORY_INDEX   = path.join(MEMORY_DIR, 'MEMORY.md');
-export const MEMORY_RULES   = path.join(MEMORY_DIR, 'RULES.jsonc');
-export const HANDOFF_FILE   = path.join(MEMORY_DIR, 'HANDOFF.md');
+const SHARED_HOME_DIR = process.env.PI_SHARED_MEMORY_HOME ?? os.homedir();
+
+// Legacy/default: index + topic files live alongside HANDOFF.md, as before.
+const LEGACY_MEMORY_DIR = path.join(AGENT_DIR, 'memory');
+// Shared: index + topic files move here when shared_dir: true, so other tools
+// (e.g. openclaude-memory/opencode) reading the same format can see them too.
+const SHARED_MEMORY_DIR = path.join(SHARED_HOME_DIR, '.agents', 'memory');
+
+// Config file: renamed from RULES.jsonc, relocated one level up out of memory/.
+// Fixed, pi-specific — never affected by shared_dir.
+export const MEMORY_RULES = path.join(AGENT_DIR, 'memory.jsonc');
+const LEGACY_MEMORY_RULES = path.join(LEGACY_MEMORY_DIR, 'RULES.jsonc');
+const LEGACY_MEMORY_RULES_BACKUP = path.join(LEGACY_MEMORY_DIR, 'RULES.jsonc.bak');
+
+// HANDOFF.md is a pi-only compaction artifact — always local, never shared.
+export const HANDOFF_FILE = path.join(LEGACY_MEMORY_DIR, 'HANDOFF.md');
+
+// One-time local carry-over backup (see maybeCarryOverLocalMemory below).
+const LOCAL_CARRYOVER_BACKUP_DIR = path.join(AGENT_DIR, 'memory-backup-before-shared-dir');
 
 // --- Constants ---
 
@@ -29,6 +51,8 @@ export const DEFAULT_INJECT_INTERVAL = 5;
 export const DEFAULT_HANDOFF_KEEP   = 3;
 export const DEFAULT_AUTO_RESUME_AFTER_THRESHOLD = false;
 export const DEFAULT_CONSOLIDATE_ON_COMPACT = false;
+export const DEFAULT_SHARED_DIR = false;
+const LOCK_STALE_MS = 10 * 1000;
 
 /**
  * Prompt sent to the agent by /memory consolidate and compaction_end consolidation path.
@@ -99,22 +123,106 @@ export const INITIAL_RULES_JSONC = `{
   // auto_resume_after_threshold_compaction: send "Continue." after threshold compaction; false = off
   "auto_resume_after_threshold_compaction": false,
   // consolidate_on_compact: run /memory consolidate after threshold compaction instead of plain "Continue."; false = off
-  "consolidate_on_compact": false
+  "consolidate_on_compact": false,
+  // shared_dir: redirect the memory INDEX and TOPIC FILES to ~/.agents/memory/, a location
+  // shared across tools (e.g. openclaude-memory/opencode). Does NOT affect where this config
+  // file itself lives — config always stays per-tool. false = keep the current per-tool location.
+  "shared_dir": false
 }
 `;
 
-// --- Config (RULES.jsonc) ---
+// --- Directory resolution ---
 
 /**
- * Read and parse RULES.jsonc. Creates the file with defaults if missing.
+ * One-time, non-destructive local carry-over: when shared_dir first resolves true and the
+ * shared directory has no index yet, copy (never move) existing index + topic files from the
+ * legacy per-tool directory into the shared one. A full backup of the legacy files is written
+ * first. The legacy directory and its files are never modified or deleted. Files already present
+ * at the destination are never overwritten. Runs at most once — guarded by shared MEMORY.md absence.
+ */
+function maybeCarryOverLocalMemory() {
+  const sharedIndex = path.join(SHARED_MEMORY_DIR, 'MEMORY.md');
+  const legacyIndex = path.join(LEGACY_MEMORY_DIR, 'MEMORY.md');
+  if (fs.existsSync(sharedIndex)) return; // already migrated
+  if (!fs.existsSync(legacyIndex)) return; // nothing to carry over
+
+  const carryable = fs.readdirSync(LEGACY_MEMORY_DIR)
+    .filter(f => f.endsWith('.md') && f !== 'HANDOFF.md'); // MEMORY.md + topic files; HANDOFF.md stays local always
+
+  // 1. Backup first — the legacy dir and its files are never touched destructively.
+  fs.mkdirSync(LOCAL_CARRYOVER_BACKUP_DIR, { recursive: true });
+  for (const file of carryable) {
+    const backupDest = path.join(LOCAL_CARRYOVER_BACKUP_DIR, file);
+    if (!fs.existsSync(backupDest)) {
+      fs.copyFileSync(path.join(LEGACY_MEMORY_DIR, file), backupDest);
+    }
+  }
+
+  // 2. Copy (never move) into the shared dir. Never overwrite an existing destination file.
+  fs.mkdirSync(SHARED_MEMORY_DIR, { recursive: true });
+  for (const file of carryable) {
+    const dest = path.join(SHARED_MEMORY_DIR, file);
+    if (!fs.existsSync(dest)) {
+      fs.copyFileSync(path.join(LEGACY_MEMORY_DIR, file), dest);
+    }
+  }
+}
+
+/**
+ * Resolve the active memory directory (index + topic files) based on the shared_dir config
+ * flag. MEMORY_RULES (config path) and HANDOFF_FILE are NOT affected by this — only the
+ * index/topic-file location moves.
+ */
+export function getMemoryDir() {
+  const { sharedDir } = parseRules();
+  if (sharedDir) {
+    maybeCarryOverLocalMemory();
+    return SHARED_MEMORY_DIR;
+  }
+  return LEGACY_MEMORY_DIR;
+}
+
+export function getMemoryIndex() {
+  return path.join(getMemoryDir(), 'MEMORY.md');
+}
+
+function ensureDir(dir) {
+  fs.mkdirSync(dir, { recursive: true });
+}
+
+/**
+ * Write a file atomically: write to a temp file in the same directory, then rename over the
+ * target. fs.renameSync is atomic on the same filesystem, so readers never observe a partial
+ * write even if the process crashes or the write races with another writer.
+ */
+function atomicWriteFileSync(filePath, content) {
+  const tmpPath = `${filePath}.tmp-${process.pid}`;
+  fs.writeFileSync(tmpPath, content, 'utf8');
+  fs.renameSync(tmpPath, filePath);
+}
+
+// --- Config (memory.jsonc) ---
+
+/**
+ * Read and parse memory.jsonc. Creates the file with defaults if missing.
+ * If the legacy RULES.jsonc (under the old memory/ dir) exists but memory.jsonc does not,
+ * back it up (RULES.jsonc.bak) and copy its content forward — the legacy file is never
+ * deleted or moved.
  * Strips // line comments and trailing commas before JSON.parse.
  * Clamps all scalar values to valid ranges.
  */
 export function parseRules() {
   try {
     if (!fs.existsSync(MEMORY_RULES)) {
-      ensureMemoryDir();
-      fs.writeFileSync(MEMORY_RULES, INITIAL_RULES_JSONC, 'utf8');
+      ensureDir(AGENT_DIR);
+      if (fs.existsSync(LEGACY_MEMORY_RULES)) {
+        if (!fs.existsSync(LEGACY_MEMORY_RULES_BACKUP)) {
+          fs.copyFileSync(LEGACY_MEMORY_RULES, LEGACY_MEMORY_RULES_BACKUP);
+        }
+        fs.copyFileSync(LEGACY_MEMORY_RULES, MEMORY_RULES);
+      } else {
+        fs.writeFileSync(MEMORY_RULES, INITIAL_RULES_JSONC, 'utf8');
+      }
     }
     const raw = fs.readFileSync(MEMORY_RULES, 'utf8');
     const stripped = raw
@@ -132,6 +240,7 @@ export function parseRules() {
       handoffKeep:       Math.max(0,               typeof obj.handoff_keep          === 'number' ? obj.handoff_keep          : DEFAULT_HANDOFF_KEEP),
       autoResumeAfterThreshold: typeof obj.auto_resume_after_threshold_compaction === 'boolean' ? obj.auto_resume_after_threshold_compaction : DEFAULT_AUTO_RESUME_AFTER_THRESHOLD,
       consolidateOnCompact: typeof obj.consolidate_on_compact === 'boolean' ? obj.consolidate_on_compact : DEFAULT_CONSOLIDATE_ON_COMPACT,
+      sharedDir: typeof obj.shared_dir === 'boolean' ? obj.shared_dir : DEFAULT_SHARED_DIR,
     };
   } catch {
     return {
@@ -144,13 +253,14 @@ export function parseRules() {
       handoffKeep:       DEFAULT_HANDOFF_KEEP,
       autoResumeAfterThreshold: DEFAULT_AUTO_RESUME_AFTER_THRESHOLD,
       consolidateOnCompact: DEFAULT_CONSOLIDATE_ON_COMPACT,
+      sharedDir: DEFAULT_SHARED_DIR,
     };
   }
 }
 
 /**
  * Render parsed rules to markdown for system prompt injection.
- * Config scalars (max_lines, stale_after_days, inject_every_n_turns, handoff_keep, auto_resume_after_threshold_compaction, consolidate_on_compact) are
+ * Config scalars (max_lines, stale_after_days, inject_every_n_turns, handoff_keep, auto_resume_after_threshold_compaction, consolidate_on_compact, shared_dir) are
  * never rendered — they are consumed by the extension, not the LLM.
  */
 export function renderRulesToMarkdown(rules) {
@@ -196,26 +306,24 @@ export function detectIncompleteTask(handoffText) {
 
 // --- File I/O helpers ---
 
-function ensureMemoryDir() {
-  fs.mkdirSync(MEMORY_DIR, { recursive: true });
-}
-
 /**
  * Read MEMORY.md, truncating if over maxLines or MAX_BYTES.
  * Creates the file with INITIAL_MEMORY if missing.
  */
 export function readMemoryIndex(maxLines) {
   try {
-    if (!fs.existsSync(MEMORY_INDEX)) {
-      ensureMemoryDir();
-      fs.writeFileSync(MEMORY_INDEX, INITIAL_MEMORY, 'utf8');
+    const memoryDir = getMemoryDir();
+    const memoryIndex = path.join(memoryDir, 'MEMORY.md');
+    if (!fs.existsSync(memoryIndex)) {
+      ensureDir(memoryDir);
+      atomicWriteFileSync(memoryIndex, INITIAL_MEMORY);
       return INITIAL_MEMORY;
     }
-    const raw = fs.readFileSync(MEMORY_INDEX, 'utf8');
+    const raw = fs.readFileSync(memoryIndex, 'utf8');
     const lines = raw.split('\n');
     if (Buffer.byteLength(raw) > MAX_BYTES) {
       const truncated = lines.slice(0, maxLines).join('\n');
-      return truncated + `\n\n<!-- memory truncated: MEMORY.md exceeds 25 KB size limit; shorten the index -->`;
+      return truncated + `\n\n<!-- memory truncated: MEMORY.md exceeds size limit; shorten the index -->`;
     }
     if (lines.length > maxLines) {
       const truncated = lines.slice(0, maxLines).join('\n');
@@ -325,7 +433,7 @@ export function upsertIndexLine(lines, filename, name, summary, pin) {
  * deduplicate by filename (keep newest date), stamp/heal [stale?].
  * Runs after every mutating tool call — never on read.
  */
-export function maintainIndex(lines, config) {
+export function maintainIndex(lines, config, memoryDir = getMemoryDir()) {
   const { staleAfterDays } = config;
 
   // Pass 1: build Map<filename, {line, rest, parsed, idx}> — most-recent date wins, orphans excluded.
@@ -335,7 +443,7 @@ export function maintainIndex(lines, config) {
     const parsed = parseIndexLine(lines[i]);
     if (!parsed) continue;
     const { filename } = parsed;
-    if (!fs.existsSync(path.join(MEMORY_DIR, filename))) continue; // orphan
+    if (!fs.existsSync(path.join(memoryDir, filename))) continue; // orphan
     const thisDate = (parsed.rest.match(ISO_DATE_RE) ?? [])[1] ?? '';
     const existing = best.get(filename);
     if (!existing) {
@@ -418,11 +526,12 @@ export function searchMemory(query) {
 
   // (b) topic file bodies — skip files already matched via index
   const SKIP = new Set(['MEMORY.md', 'RULES.jsonc', 'HANDOFF.md']);
-  if (!fs.existsSync(MEMORY_DIR)) return results;
-  for (const file of fs.readdirSync(MEMORY_DIR)) {
+  const memoryDir = getMemoryDir();
+  if (!fs.existsSync(memoryDir)) return results;
+  for (const file of fs.readdirSync(memoryDir)) {
     if (!file.endsWith('.md')) continue;
     if (SKIP.has(file) || indexedNames.has(file)) continue;
-    const filePath = path.join(MEMORY_DIR, file);
+    const filePath = path.join(memoryDir, file);
     const lines = fs.readFileSync(filePath, 'utf8').split('\n');
     for (const line of lines) {
       if (line.toLowerCase().includes(q)) {
@@ -438,16 +547,42 @@ export function searchMemory(query) {
 
 // --- Concurrency ---
 
-// process-global mutex; safe for single-user extension.
-// Upgrade to per-topic lock if high-frequency concurrent writes become an issue.
-let writeLock = false;
+/**
+ * Cross-process advisory file lock. A single in-process mutex is not enough once the
+ * memory dir can be shared with other tools/processes (shared_dir: true). Acquires by
+ * atomically creating a `.lock` file (fails if it already exists); a lock older than
+ * LOCK_STALE_MS is assumed abandoned by a crashed process and is stolen.
+ */
+async function acquireLock(lockPath) {
+  for (;;) {
+    try {
+      fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
+      return;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      try {
+        const stat = fs.statSync(lockPath);
+        if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
+          try { fs.unlinkSync(lockPath); } catch {}
+          continue;
+        }
+      } catch {
+        continue; // lock file vanished between our check and stat — retry immediately
+      }
+      await new Promise(r => setTimeout(r, 20));
+    }
+  }
+}
+
 async function withLock(fn) {
-  while (writeLock) await new Promise(r => setTimeout(r, 10));
-  writeLock = true;
+  const memoryDir = getMemoryDir();
+  ensureDir(memoryDir);
+  const lockPath = path.join(memoryDir, '.lock');
+  await acquireLock(lockPath);
   try {
     return await fn();
   } finally {
-    writeLock = false;
+    try { fs.unlinkSync(lockPath); } catch {}
   }
 }
 
@@ -458,11 +593,13 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
   // backwards compat: overwrite: true maps to mode: 'replace'
   const replace = mode === 'replace' || overwrite === true;
   return withLock(() => {
-    ensureMemoryDir();
+    const memoryDir = getMemoryDir();
+    const memoryIndex = path.join(memoryDir, 'MEMORY.md');
+    ensureDir(memoryDir);
 
     // Read index once — reused for topic-name lookup and upsert
-    const rawIndex = fs.existsSync(MEMORY_INDEX)
-      ? fs.readFileSync(MEMORY_INDEX, 'utf8')
+    const rawIndex = fs.existsSync(memoryIndex)
+      ? fs.readFileSync(memoryIndex, 'utf8')
       : INITIAL_MEMORY;
 
     // Prefer existing filename if the topic is already indexed (avoids slug drift)
@@ -474,7 +611,7 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
         break;
       }
     }
-    const topicPath = path.join(MEMORY_DIR, filename);
+    const topicPath = path.join(memoryDir, filename);
 
     let isNew = false;
     const dt = nowIso();
@@ -482,24 +619,24 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
       isNew = true;
       const frontmatter =
         `---\nname: ${topic}\ndescription: ${summary}\ncreated: ${dt}\nlast_updated: ${dt}\nmetadata:\n  node_type: memory\n---\n\n`;
-      fs.writeFileSync(topicPath, frontmatter + content + '\n', 'utf8');
+      atomicWriteFileSync(topicPath, frontmatter + content + '\n');
     } else if (replace) {
       // Replace body content; preserve frontmatter and update last_updated
       const existing = fs.readFileSync(topicPath, 'utf8');
       const updated = updateFrontmatterLastUpdated(existing, dt);
       // Strip everything after the closing frontmatter --- and replace with new content
       const bodyStart = updated.indexOf('---\n', 4) + 4; // skip past the closing ---
-      fs.writeFileSync(topicPath, updated.slice(0, bodyStart) + '\n' + content + '\n', 'utf8');
+      atomicWriteFileSync(topicPath, updated.slice(0, bodyStart) + '\n' + content + '\n');
     } else {
       const existing = fs.readFileSync(topicPath, 'utf8');
       const updated = updateFrontmatterLastUpdated(existing, dt);
-      fs.writeFileSync(topicPath, updated + `\n## ${today()}\n\n` + content + '\n', 'utf8');
+      atomicWriteFileSync(topicPath, updated + `\n## ${today()}\n\n` + content + '\n');
     }
 
     let lines = rawIndex.split('\n');
     lines = upsertIndexLine(lines, filename, topic, summary, pin);
-    lines = maintainIndex(lines, parseRules());
-    fs.writeFileSync(MEMORY_INDEX, lines.join('\n'), 'utf8');
+    lines = maintainIndex(lines, parseRules(), memoryDir);
+    atomicWriteFileSync(memoryIndex, lines.join('\n'));
 
     return `${isNew ? 'Created' : 'Updated'} memory topic "${topic}" (${filename}).`;
   });
@@ -507,9 +644,10 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
 
 export async function executeRemoveMemory({ topic }) {
   return withLock(() => {
-    if (!fs.existsSync(MEMORY_INDEX)) return 'No memory index found.';
+    const memoryIndex = getMemoryIndex();
+    if (!fs.existsSync(memoryIndex)) return 'No memory index found.';
 
-    const lines = fs.readFileSync(MEMORY_INDEX, 'utf8').split('\n');
+    const lines = fs.readFileSync(memoryIndex, 'utf8').split('\n');
     const found = findIndexEntry(lines, topic);
 
     if (!found) return `No entry found matching "${topic}".`;
@@ -518,16 +656,17 @@ export async function executeRemoveMemory({ topic }) {
       return `Cannot remove "${found.parsed.name}" — it is pinned. Unpin it first with: /memory unpin ${topic}`;
 
     lines.splice(found.idx, 1);
-    fs.writeFileSync(MEMORY_INDEX, lines.join('\n'), 'utf8');
+    atomicWriteFileSync(memoryIndex, lines.join('\n'));
     return `Removed "${found.parsed.name}" from the index. Topic file is preserved on disk.`;
   });
 }
 
 export async function executePinMemory({ topic, pin }) {
   return withLock(() => {
-    if (!fs.existsSync(MEMORY_INDEX)) return 'No memory index found.';
+    const memoryIndex = getMemoryIndex();
+    if (!fs.existsSync(memoryIndex)) return 'No memory index found.';
 
-    const lines = fs.readFileSync(MEMORY_INDEX, 'utf8').split('\n');
+    const lines = fs.readFileSync(memoryIndex, 'utf8').split('\n');
     const found = findIndexEntry(lines, topic);
 
     if (!found) return `No entry found matching "${topic}".`;
@@ -546,7 +685,7 @@ export async function executePinMemory({ topic, pin }) {
       lines[idx] = lines[idx].replace(' [pin]', '');
     }
 
-    fs.writeFileSync(MEMORY_INDEX, lines.join('\n'), 'utf8');
+    atomicWriteFileSync(memoryIndex, lines.join('\n'));
     return `${pin ? 'Pinned' : 'Unpinned'} "${parsed.name}".\nBefore: ${before}\n After: ${lines[idx]}`;
   });
 }
@@ -596,7 +735,7 @@ export function writeHandoff(messages, reason, handoffKeep = DEFAULT_HANDOFF_KEE
 
   const entry = `## ${nowIso()} (${reason})\n\n${bullets.join('\n')}\n`;
 
-  ensureMemoryDir();
+  ensureDir(LEGACY_MEMORY_DIR);
   const existing = fs.existsSync(HANDOFF_FILE) ? fs.readFileSync(HANDOFF_FILE, 'utf8') : '';
   const updated = existing + (existing.endsWith('\n') || !existing ? '' : '\n') + '\n' + entry;
 
@@ -623,8 +762,9 @@ export function readHandoff() {
  * Parse MEMORY.md index into structured entries for UI and display use.
  */
 export function readIndexEntries() {
-  if (!fs.existsSync(MEMORY_INDEX)) return [];
-  const raw = fs.readFileSync(MEMORY_INDEX, 'utf8');
+  const memoryIndex = getMemoryIndex();
+  if (!fs.existsSync(memoryIndex)) return [];
+  const raw = fs.readFileSync(memoryIndex, 'utf8');
   const entries = [];
   for (const line of raw.split('\n')) {
     const parsed = parseIndexLine(line);
@@ -647,7 +787,7 @@ export function readIndexEntries() {
  * Read a topic file's body (frontmatter stripped) for display.
  */
 export function readTopicContent(filename) {
-  const filePath = path.join(MEMORY_DIR, filename);
+  const filePath = path.join(getMemoryDir(), filename);
   if (!fs.existsSync(filePath)) return '_(file not found)_';
   const raw = fs.readFileSync(filePath, 'utf8');
   const fmMatch = raw.match(/^---\n[\s\S]*?\n---\n/);

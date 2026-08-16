@@ -4,10 +4,10 @@
  * Provides global persistent memory across pi sessions via MEMORY.md injection.
  * Modeled after openclaude-memory (opencode), ported to pi's extension API.
  *
- * Storage: ~/.pi/agent/memory/   (or $PI_CODING_AGENT_DIR/memory/)
- *   MEMORY.md   — index, injected into system prompt
- *   RULES.jsonc — persist rules + config scalars
- *   <topic>.md  — per-topic detail files
+ * Storage: ~/.pi/agent/memory/  (or ~/.agents/memory/ when shared_dir: true)   (or $PI_CODING_AGENT_DIR/memory/)
+ *   MEMORY.md    — index, injected into system prompt
+ *   <topic>.md   — per-topic detail files
+ * Config: ~/.pi/agent/memory.jsonc — persist rules + config scalars (always per-tool, never shared)
  *
  * Hooks used:
  *   session_start          — bootstrap memory dir + files; reset injection state
@@ -23,7 +23,7 @@ import { Type } from 'typebox';
 import { getMarkdownTheme, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { type Component, Markdown, matchesKey, type SelectItem, SelectList, Spacer, Text, visibleWidth } from '@earendil-works/pi-tui';
 import {
-  MEMORY_DIR,
+  getMemoryDir,
   MEMORY_RULES,
   MAX_LINES,
   CONSOLIDATION_PROMPT,
@@ -73,11 +73,11 @@ let _lastCompactionSummary: string | null = null;
 export default function (pi: ExtensionAPI) {
   // ── session_start ────────────────────────────────────────────────────────
   // Bootstrap memory dir + files on every session start so they exist before
-  // the first user prompt (e.g. for editing RULES.jsonc upfront).
+  // the first user prompt (e.g. for editing memory.jsonc upfront).
   // Also resets injection state so each session begins with a clean slate.
 
   pi.on('session_start', () => {
-    parseRules();               // creates RULES.jsonc with defaults if missing
+    parseRules();               // creates memory.jsonc with defaults if missing
     readMemoryIndex(MAX_LINES); // creates MEMORY.md if missing
     _injectedOnce = false;
     _turnCount = 0;
@@ -87,7 +87,7 @@ export default function (pi: ExtensionAPI) {
 
   // ── before_agent_start ──────────────────────────────────────────────────
   // Fires once per user prompt (not per internal LLM call).
-  // Reads rules fresh each call — changes to RULES.jsonc take effect immediately.
+  // Reads rules fresh each call — changes to memory.jsonc take effect immediately.
 
   pi.on('before_agent_start', async (event) => {
     _turnCount++;
@@ -105,7 +105,7 @@ export default function (pi: ExtensionAPI) {
           `\n\n## Global Memory\n\n` +
           `The following is your persistent memory index. It persists across all sessions. ` +
           `Topic files referenced here can be read on-demand for detail.\n\n` +
-          `Memory dir: ${MEMORY_DIR}\n\n${content}`;
+          `Memory dir: ${getMemoryDir()}\n\n${content}`;
       }
       if (rulesMarkdown) {
         extra +=
