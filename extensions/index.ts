@@ -26,6 +26,8 @@ import {
   MEMORY_DIR,
   MEMORY_RULES,
   MAX_LINES,
+  CONSOLIDATION_PROMPT,
+  buildCompactionConsolidationPrompt,
   parseRules,
   renderRulesToMarkdown,
   readMemoryIndex,
@@ -66,6 +68,7 @@ function borderedBox(colorFn: (s: string) => string, children: Component[]): Com
 let _injectedOnce = false;
 let _turnCount = 0;
 let _handoffConsumed = false;
+let _lastCompactionSummary: string | null = null;
 
 export default function (pi: ExtensionAPI) {
   // ── session_start ────────────────────────────────────────────────────────
@@ -79,6 +82,7 @@ export default function (pi: ExtensionAPI) {
     _injectedOnce = false;
     _turnCount = 0;
     _handoffConsumed = false;
+    _lastCompactionSummary = null;
   });
 
   // ── before_agent_start ──────────────────────────────────────────────────
@@ -138,6 +142,14 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  // ── session_compact ──────────────────────────────────────────────────────
+  // Capture compaction summary so compaction_end can use it directly instead
+  // of asking the agent to re-scan the full conversation history.
+
+  pi.on('session_compact', (event) => {
+    _lastCompactionSummary = event.compactionEntry.summary;
+  });
+
   // ── compaction_end ───────────────────────────────────────────────────────
   // Auto-resume after threshold compaction: opt-in nudge + handoff-aware detection
 
@@ -145,6 +157,16 @@ export default function (pi: ExtensionAPI) {
     if (event.reason !== 'threshold' || event.willRetry) return;
 
     const rules = parseRules();
+
+    // Consolidation path: extract session facts + write recap instead of plain nudge
+    if (rules.consolidateOnCompact) {
+      const prompt = _lastCompactionSummary
+        ? buildCompactionConsolidationPrompt(_lastCompactionSummary)
+        : CONSOLIDATION_PROMPT;
+      _lastCompactionSummary = null;
+      pi.sendUserMessage(prompt, { deliverAs: 'followUp' });
+      return;
+    }
 
     // Config-based nudge: send "Continue." for ALL threshold compactions if enabled
     if (rules.autoResumeAfterThreshold) {
@@ -223,7 +245,7 @@ export default function (pi: ExtensionAPI) {
   // ── /memory command ───────────────────────────────────────────────────────
 
   pi.registerCommand('memory', {
-    description: '/memory → show index | /memory <text> → store | /memory pin <topic> | /memory unpin <topic> | /memory remove <topic> | /memory search <query>',
+    description: '/memory → show index | /memory <text> → store | /memory consolidate → extract session facts | /memory pin <topic> | /memory unpin <topic> | /memory remove <topic> | /memory search <query>',
 
     handler: async (args, ctx) => {
       const trimmed = args.trim();
@@ -458,6 +480,17 @@ export default function (pi: ExtensionAPI) {
           .map(m => byFile.get(m.filename))
           .filter((e): e is NonNullable<typeof e> => !!e);
         await browseEntries(entries, `Search: ${query}  (${entries.length} match${entries.length === 1 ? '' : 'es'})`);
+        return;
+      }
+
+      // consolidate
+      if (trimmed.toLowerCase() === 'consolidate') {
+        if (!ctx.isIdle()) {
+          ctx.ui.notify('Agent is busy — consolidation queued as follow-up.', 'info');
+          pi.sendUserMessage(CONSOLIDATION_PROMPT, { deliverAs: 'followUp' });
+          return;
+        }
+        pi.sendUserMessage(CONSOLIDATION_PROMPT);
         return;
       }
 

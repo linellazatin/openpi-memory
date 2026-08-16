@@ -22,12 +22,44 @@ export const HANDOFF_FILE   = path.join(MEMORY_DIR, 'HANDOFF.md');
 
 // --- Constants ---
 
-export const MAX_LINES = 200;
-export const MAX_BYTES = 25 * 1024;
+export const MAX_LINES = 300;
+export const MAX_BYTES = 50 * 1024;
 export const DEFAULT_STALE_DAYS     = 180;
 export const DEFAULT_INJECT_INTERVAL = 5;
 export const DEFAULT_HANDOFF_KEEP   = 3;
 export const DEFAULT_AUTO_RESUME_AFTER_THRESHOLD = false;
+export const DEFAULT_CONSOLIDATE_ON_COMPACT = false;
+
+/**
+ * Prompt sent to the agent by /memory consolidate and compaction_end consolidation path.
+ * Instructs the agent to extract undocumented facts from the conversation and persist them,
+ * then write a last-session-recap entry to orient the next session.
+ */
+const CONSOLIDATION_BODY =
+`Focus on:
+- Facts, configurations, or environment details learned
+- Decisions made and the reasoning behind them
+- Issues solved and how they were resolved
+- Reusable commands, workflows, or patterns discovered
+- User preferences stated explicitly
+
+Skip anything already present in the ## Global Memory index, anything ephemeral or session-specific, and large code blocks (summarize or reference the file path instead).
+
+As a final step, call write_memory with topic "last-session-recap", mode "replace", and pin false. Write a 3-5 sentence narrative summary of what was accomplished this session — this entry will be injected at the start of the next session to orient you quickly.`;
+
+export const CONSOLIDATION_PROMPT =
+`Review our conversation history and identify anything worth preserving across sessions that has not been written to memory yet. For each item, call write_memory with an appropriate topic, content, summary, and mode.
+
+${CONSOLIDATION_BODY}`;
+
+/**
+ * Build a targeted consolidation prompt from a pre-generated compaction summary.
+ * Cheaper than CONSOLIDATION_PROMPT: skips the full conversation scan — the summary
+ * is already compressed and comprehensive.
+ */
+export function buildCompactionConsolidationPrompt(summary) {
+  return `The following is the session summary pi just generated during compaction:\n\n${summary}\n\nUsing this summary, extract anything worth preserving across sessions that has not been written to memory yet. For each item, call write_memory with an appropriate topic, content, summary, and mode.\n\n${CONSOLIDATION_BODY}`;
+}
 
 // --- Initial file content ---
 
@@ -56,8 +88,8 @@ export const INITIAL_RULES_JSONC = `{
     "Personal data",
     "Anything the user marks as private or ephemeral"
   ],
-  // max_lines: valid range 50–500
-  "max_lines": 200,
+  // max_lines: valid range 50–1000
+  "max_lines": 300,
   // stale_after_days: 0 = disable age flagging
   "stale_after_days": 180,
   // inject_every_n_turns: re-inject memory every N user prompts; 1 = every prompt
@@ -65,7 +97,9 @@ export const INITIAL_RULES_JSONC = `{
   // handoff_keep: number of past compaction handoffs to retain in HANDOFF.md; 0 = disable
   "handoff_keep": 3,
   // auto_resume_after_threshold_compaction: send "Continue." after threshold compaction; false = off
-  "auto_resume_after_threshold_compaction": false
+  "auto_resume_after_threshold_compaction": false,
+  // consolidate_on_compact: run /memory consolidate after threshold compaction instead of plain "Continue."; false = off
+  "consolidate_on_compact": false
 }
 `;
 
@@ -92,11 +126,12 @@ export function parseRules() {
       alwaysPersist: Array.isArray(obj.always_persist) ? obj.always_persist : [],
       neverPersist:  Array.isArray(obj.never_persist)  ? obj.never_persist  : [],
       alwaysAsk:     Array.isArray(obj.always_ask)     ? obj.always_ask     : [],
-      maxLines:          Math.min(500, Math.max(50,  typeof obj.max_lines           === 'number' ? obj.max_lines           : MAX_LINES)),
+      maxLines:          Math.min(1000, Math.max(50,  typeof obj.max_lines           === 'number' ? obj.max_lines           : MAX_LINES)),
       staleAfterDays:    Math.max(0,               typeof obj.stale_after_days     === 'number' ? obj.stale_after_days     : DEFAULT_STALE_DAYS),
       injectEveryNTurns: Math.max(1,               typeof obj.inject_every_n_turns  === 'number' ? obj.inject_every_n_turns  : DEFAULT_INJECT_INTERVAL),
       handoffKeep:       Math.max(0,               typeof obj.handoff_keep          === 'number' ? obj.handoff_keep          : DEFAULT_HANDOFF_KEEP),
       autoResumeAfterThreshold: typeof obj.auto_resume_after_threshold_compaction === 'boolean' ? obj.auto_resume_after_threshold_compaction : DEFAULT_AUTO_RESUME_AFTER_THRESHOLD,
+      consolidateOnCompact: typeof obj.consolidate_on_compact === 'boolean' ? obj.consolidate_on_compact : DEFAULT_CONSOLIDATE_ON_COMPACT,
     };
   } catch {
     return {
@@ -108,13 +143,14 @@ export function parseRules() {
       injectEveryNTurns: DEFAULT_INJECT_INTERVAL,
       handoffKeep:       DEFAULT_HANDOFF_KEEP,
       autoResumeAfterThreshold: DEFAULT_AUTO_RESUME_AFTER_THRESHOLD,
+      consolidateOnCompact: DEFAULT_CONSOLIDATE_ON_COMPACT,
     };
   }
 }
 
 /**
  * Render parsed rules to markdown for system prompt injection.
- * Config scalars (max_lines, stale_after_days, inject_every_n_turns, auto_resume_after_threshold_compaction) are
+ * Config scalars (max_lines, stale_after_days, inject_every_n_turns, handoff_keep, auto_resume_after_threshold_compaction, consolidate_on_compact) are
  * never rendered — they are consumed by the extension, not the LLM.
  */
 export function renderRulesToMarkdown(rules) {
@@ -160,7 +196,7 @@ export function detectIncompleteTask(handoffText) {
 
 // --- File I/O helpers ---
 
-export function ensureMemoryDir() {
+function ensureMemoryDir() {
   fs.mkdirSync(MEMORY_DIR, { recursive: true });
 }
 
@@ -210,12 +246,12 @@ export function parseIndexLine(line) {
   };
 }
 
-export function today() {
+function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
 // Returns current local datetime as ISO 8601 with host timezone offset: 2026-08-06T23:15:30+08:00
-export function nowIso() {
+function nowIso() {
   const d = new Date();
   const pad = n => String(n).padStart(2, '0');
   const offsetMins = -d.getTimezoneOffset(); // getTimezoneOffset() is inverted
@@ -233,7 +269,7 @@ export function nowIso() {
  * Frontmatter is the block between the opening --- and closing ---.
  * Inserts after the created: line if last_updated is not yet present.
  */
-export function updateFrontmatterLastUpdated(fileContent, datetime) {
+function updateFrontmatterLastUpdated(fileContent, datetime) {
   const fmMatch = fileContent.match(/^---\n([\s\S]*?)\n---\n/);
   if (!fmMatch) return fileContent;
 
@@ -345,7 +381,7 @@ export function maintainIndex(lines, config) {
  * Find the first index entry whose name or filename matches the search string
  * (case-insensitive, substring match).
  */
-export function findIndexEntry(lines, search) {
+function findIndexEntry(lines, search) {
   const s = search.toLowerCase();
   for (let i = 0; i < lines.length; i++) {
     const parsed = parseIndexLine(lines[i]);
@@ -405,7 +441,7 @@ export function searchMemory(query) {
 // process-global mutex; safe for single-user extension.
 // Upgrade to per-topic lock if high-frequency concurrent writes become an issue.
 let writeLock = false;
-export async function withLock(fn) {
+async function withLock(fn) {
   while (writeLock) await new Promise(r => setTimeout(r, 10));
   writeLock = true;
   try {
@@ -616,23 +652,4 @@ export function readTopicContent(filename) {
   const raw = fs.readFileSync(filePath, 'utf8');
   const fmMatch = raw.match(/^---\n[\s\S]*?\n---\n/);
   return fmMatch ? raw.slice(fmMatch[0].length).trimStart() : raw;
-}
-
-/**
- * Format MEMORY.md index as a markdown table (fallback / plain-text contexts).
- */
-export function formatMemoryTable() {
-  const entries = readIndexEntries();
-  if (entries.length === 0)
-    return 'Memory index is empty. Use `/memory <text>` to store something.';
-
-  const rows = entries
-    .map(e => `| ${e.name} | ${e.date} | ${e.pinned ? 'Yes' : 'No'} | ${e.stale ? 'Yes' : 'No'} |`)
-    .join('\n');
-
-  return [
-    '| Topic | Date | Pinned | Stale |',
-    '|---|---|---|---|',
-    rows,
-  ].join('\n');
 }

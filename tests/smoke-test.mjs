@@ -31,6 +31,8 @@ const {
   MEMORY_RULES,
   HANDOFF_FILE,
   DEFAULT_AUTO_RESUME_AFTER_THRESHOLD,
+  DEFAULT_CONSOLIDATE_ON_COMPACT,
+  buildCompactionConsolidationPrompt,
   parseRules,
   renderRulesToMarkdown,
   toSlug,
@@ -86,7 +88,7 @@ await test('defaults: missing file returns defaults', async () => {
   // Remove any existing RULES.jsonc so defaults are exercised
   if (fs.existsSync(MEMORY_RULES)) fs.unlinkSync(MEMORY_RULES);
   const r = parseRules();
-  assert.equal(r.maxLines, 200, 'default maxLines');
+  assert.equal(r.maxLines, 300, 'default maxLines');
   assert.equal(r.staleAfterDays, 180, 'default staleAfterDays');
   assert.equal(r.injectEveryNTurns, 5, 'default injectEveryNTurns');
 });
@@ -97,10 +99,10 @@ await test('max_lines clamps to 50 minimum', async () => {
   assert.equal(r.maxLines, 50, 'should clamp to 50');
 });
 
-await test('max_lines clamps to 500 maximum', async () => {
+await test('max_lines clamps to 1000 maximum', async () => {
   writeRules('{ "max_lines": 9999 }');
   const r = parseRules();
-  assert.equal(r.maxLines, 500, 'should clamp to 500');
+  assert.equal(r.maxLines, 1000, 'should clamp to 1000');
 });
 
 await test('stale_after_days=0 disables stale flagging', async () => {
@@ -723,6 +725,53 @@ await test('detectIncompleteTask: complex handoff text', async () => {
     'Should check the backup status before proceeding.',
   ].join('\n');
   assert.ok(detectIncompleteTask(complex), 'found in complex text');
+});
+
+// ═══════════════════════════════════════════════════════════
+// 12. consolidate_on_compact
+// ═══════════════════════════════════════════════════════════
+
+console.log('\n--- 12. consolidate_on_compact ---');
+
+await test('parseRules: consolidateOnCompact defaults to false', async () => {
+  if (fs.existsSync(MEMORY_RULES)) fs.unlinkSync(MEMORY_RULES);
+  const r = parseRules();
+  assert.equal(r.consolidateOnCompact, DEFAULT_CONSOLIDATE_ON_COMPACT, 'default false');
+});
+
+await test('parseRules: consolidateOnCompact=true from JSONC', async () => {
+  writeRules('{ "consolidate_on_compact": true }');
+  const r = parseRules();
+  assert.equal(r.consolidateOnCompact, true, 'should parse true');
+});
+
+await test('parseRules: consolidateOnCompact=false from JSONC', async () => {
+  writeRules('{ "consolidate_on_compact": false }');
+  const r = parseRules();
+  assert.equal(r.consolidateOnCompact, false, 'should parse false');
+});
+
+// ═══════════════════════════════════════════════════════════
+// 13. buildCompactionConsolidationPrompt
+// ═══════════════════════════════════════════════════════════
+
+console.log('\n--- 13. buildCompactionConsolidationPrompt ---');
+
+await test('returns a string containing the summary text', async () => {
+  const summary = 'We implemented the memory consolidation feature.';
+  const prompt = buildCompactionConsolidationPrompt(summary);
+  assert.ok(typeof prompt === 'string', 'returns a string');
+  assert.ok(prompt.includes(summary), 'contains the summary');
+});
+
+await test('contains write_memory instruction', async () => {
+  const prompt = buildCompactionConsolidationPrompt('test summary');
+  assert.ok(prompt.includes('write_memory'), 'mentions write_memory');
+});
+
+await test('contains last-session-recap instruction', async () => {
+  const prompt = buildCompactionConsolidationPrompt('test summary');
+  assert.ok(prompt.includes('last-session-recap'), 'mentions last-session-recap');
 });
 
 // ═══════════════════════════════════════════════════════════
