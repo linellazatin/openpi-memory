@@ -85,7 +85,7 @@ On skipped turns, `## Global Memory` is **absent from the system prompt entirely
 
 ### Why not inject on every turn by default?
 
-Token cost. At 200 index entries, a single injection is ~7,000+ tokens. At `inject_every_n_turns: 5`, that cost is amortized across 5 turns. See [Token overhead](#token-overhead) for a full breakdown and the savings table.
+Token cost. At 300 index entries, a single injection is ~10,800+ tokens. At `inject_every_n_turns: 5`, that cost is amortized across 5 turns. See [Token overhead](#token-overhead) for a full breakdown and the savings table.
 
 ## How it works
 
@@ -124,6 +124,7 @@ Use these instead of asking the agent to edit files directly — they guarantee 
 ```
 /memory                    → open interactive memory browser
 /memory <text>             → store something (agent picks topic, summary, pin)
+/memory consolidate        → scan conversation; write undocumented facts + session recap
 /memory pin <topic>        → pin an entry
 /memory unpin <topic>      → unpin an entry
 /memory remove <topic>     → remove an index entry
@@ -144,6 +145,12 @@ Use these instead of asking the agent to edit files directly — they guarantee 
 **`/memory pin/unpin/remove <topic>`** are a chat-input fallback for when you already know the topic name and want to skip opening the browser. They run directly in the command handler — no LLM round-trip.
 
 **`/memory search <query>`** does a case-insensitive substring search across the index (name, filename, summary) and all topic file bodies. Matching entries open in the full interactive browser — same pin/unpin, remove, and detail view as `/memory`. No LLM round-trip.
+
+**`/memory consolidate`** sends a structured prompt to the agent asking it to scan the current conversation history and call `write_memory` for each fact, decision, discovery, config detail, or technical learning not yet in the index. As a final step, the agent writes a `last-session-recap` entry (`mode: replace`) — a 3–5 sentence narrative of what was accomplished this session. That recap entry is injected into the system prompt at the start of the next session, orienting the agent without requiring the user to re-explain context.
+
+When triggered via `consolidate_on_compact`, the extension feeds pi's already-generated compaction summary directly to the agent instead of asking it to re-scan the full conversation — saving one LLM scan turn. When invoked manually via `/memory consolidate`, the agent scans the live conversation history.
+
+Cost: one LLM round-trip (extraction only when via compaction; scan + extract when manual). Use at natural breakpoints — before closing a long session, before switching contexts, or any time you want the session's learnings captured. Enable `consolidate_on_compact: true` in `RULES.jsonc` to run consolidation automatically after threshold compaction.
 
 ## Compaction handoff
 
@@ -185,6 +192,8 @@ When the agent finishes a task and threshold compaction fires, the extension can
 
 Both modes are gated on `reason === 'threshold' && !willRetry` — manual `/compact` and overflow compactions never trigger it.
 
+`consolidate_on_compact: true` in `RULES.jsonc` supersedes both modes — when consolidation is enabled, it fires instead of the plain `"Continue."` nudge. The extension uses pi's already-generated compaction summary as input (captured at `session_compact`), so the agent only needs to extract facts — no full conversation scan.
+
 ## Index format
 
 Each line in `MEMORY.md` follows this format:
@@ -215,7 +224,7 @@ After every `write_memory`, `remove_memory`, or `pin_memory` call, the extension
 - **Deduplication** — keeps the entry with the newer date if two entries share a filename
 - **Stale stamping/healing** — applies or removes `[stale?]` based on entry age
 
-Maintenance never runs on read — only on write. The on-disk `MEMORY.md` has no hard entry cap — `maintainIndex` never prunes valid entries. Only `readMemoryIndex` truncates what gets injected (line cap + 25 KB byte cap). Manual trimming via `/memory remove` or the browser is the remediation path when the index grows large.
+Maintenance never runs on read — only on write. The on-disk `MEMORY.md` has no hard entry cap — `maintainIndex` never prunes valid entries. Only `readMemoryIndex` truncates what gets injected (line cap + 50 KB byte cap). Manual trimming via `/memory remove` or the browser is the remediation path when the index grows large.
 
 ## Token overhead
 
@@ -277,7 +286,7 @@ Negligible. Only fires on threshold compaction — not overflow or manual.
 | Normal use             | 10      | ~615      | ~130   | **~745**   |
 | Active use             | 25      | ~1,140    | ~130   | **~1,270** |
 | Fully loaded           | 50      | ~2,015    | ~130   | **~2,145** |
-| At `max_lines: 200` cap | ~197   | ~7,160    | ~130   | **~7,290** |
+| At `max_lines: 300` cap | ~297   | ~10,660   | ~130   | **~10,790** |
 
 With `inject_every_n_turns: 5` (default), the amortized cost per turn is `(injection + 4 × base) ÷ 5`:
 
@@ -285,11 +294,11 @@ With `inject_every_n_turns: 5` (default), the amortized cost per turn is `(injec
 | ------------------------- | -------------- |
 | Normal use (10 entries)   | **~253**       |
 | Fully loaded (50 entries) | **~533**       |
-| At cap (197 entries)      | **~1,510**     |
+| At cap (297 entries)      | **~2,256**     |
 
 Non-injected turns cost only the per-turn base: **~130 tokens**.
 
-For context: 7,290 tokens is ~3.6% of a 200k context window. A 50-entry index stays well under 2,200 tokens per injected turn.
+For context: 10,790 tokens is ~5.4% of a 200k context window. A 50-entry index stays well under 2,200 tokens per injected turn.
 
 ### Savings from throttling
 
@@ -381,8 +390,8 @@ For compact or edge models, `/memory <text>` explicit commands are always more r
     "Personal data",
     "Anything the user marks as private or ephemeral"
   ],
-  // max_lines: valid range 50–500
-  "max_lines": 200,
+  // max_lines: valid range 50–1000
+  "max_lines": 300,
   // stale_after_days: 0 = disable age flagging
   "stale_after_days": 180,
   // inject_every_n_turns: 1 = inject on every user prompt
@@ -390,11 +399,13 @@ For compact or edge models, `/memory <text>` explicit commands are always more r
   // handoff_keep: number of compaction handoff entries to retain in HANDOFF.md; 0 = disable
   "handoff_keep": 3,
   // auto_resume_after_threshold_compaction: send "Continue." after threshold compaction; false = off
-  "auto_resume_after_threshold_compaction": false
+  "auto_resume_after_threshold_compaction": false,
+  // consolidate_on_compact: run /memory consolidate after threshold compaction instead of plain "Continue."; false = off
+  "consolidate_on_compact": false
 }
 ```
 
-The rule arrays (`always_persist`, `never_persist`, `always_ask`) are rendered to markdown and injected into the system prompt. Config scalars (`max_lines`, `stale_after_days`, `inject_every_n_turns`, `handoff_keep`, `auto_resume_after_threshold_compaction`) are consumed by the extension and never injected. Changes take effect on the next user prompt — no reload required.
+The rule arrays (`always_persist`, `never_persist`, `always_ask`) are rendered to markdown and injected into the system prompt. Config scalars (`max_lines`, `stale_after_days`, `inject_every_n_turns`, `handoff_keep`, `auto_resume_after_threshold_compaction`, `consolidate_on_compact`) are consumed by the extension and never injected. Changes take effect on the next user prompt — no reload required.
 
 ## Install
 

@@ -45,6 +45,8 @@ When calling `write_memory`, assign the topic to one of four categories. Types a
 | `project` | Ongoing work, decisions, constraints, deadlines | When you learn a non-obvious constraint, decision, or stakeholder requirement | Fact → **Why:** → **How to apply:** |
 | `reference` | Pointers to external systems | When you learn where information lives (repos, boards, dashboards, channels, issue trackers) | Plain prose |
 
+**`last-session-recap`** is a special replace-mode entry written automatically by `/memory consolidate` (and `consolidate_on_compact`). It holds a 3–5 sentence narrative of what was accomplished in the most recent session. Always exactly one entry (mode: replace). Injected on the next session start as part of the normal `## Global Memory` block — do not write this topic manually.
+
 For `feedback` and `project` types, structure the body like this:
 
 ```
@@ -139,7 +141,7 @@ When you see `[stale?]` entries:
 
 ## When the cap is hit
 
-If the injected `## Global Memory` block contains a truncation warning (`memory truncated`), the index has exceeded the configured line limit (default: 200 lines) or the 25 KB hard byte cap and must be trimmed. Steps:
+If the injected `## Global Memory` block contains a truncation warning (`memory truncated`), the index has exceeded the configured line limit (default: 300 lines) or the 50 KB hard byte cap and must be trimmed. Steps:
 
 1. Read `MEMORY.md` in full to assess all entries.
 2. Identify candidates for removal in this order:
@@ -161,6 +163,8 @@ The `/memory` command provides an interactive TUI browser. From it you can:
 - Press `esc` to exit
 
 `/memory search <query>` opens the same browser pre-filtered to matching entries.
+
+`/memory consolidate` instructs the agent to scan the current conversation and call `write_memory` for each undocumented fact, decision, discovery, or config detail. As a final step it writes a `last-session-recap` entry (`mode: replace`) — a brief narrative of what was accomplished — which is injected into the system prompt at the start of the next session. Use at natural session breakpoints or before switching context. Enable `consolidate_on_compact: true` in `RULES.jsonc` to run this automatically after threshold compaction.
 
 ## Persist rules
 
@@ -192,8 +196,8 @@ If no `## Memory Rules` block is in your context, read `~/.pi/agent/memory/RULES
     "Personal data",
     "Anything the user marks as private or ephemeral"
   ],
-  // max_lines: valid range 50–500
-  "max_lines": 200,
+  // max_lines: valid range 50–1000
+  "max_lines": 300,
   // stale_after_days: 0 = disable age flagging
   "stale_after_days": 180,
   // inject_every_n_turns: 1 = inject on every user prompt
@@ -201,7 +205,9 @@ If no `## Memory Rules` block is in your context, read `~/.pi/agent/memory/RULES
   // handoff_keep: number of compaction handoff entries to retain; 0 = disable
   "handoff_keep": 3,
   // auto_resume_after_threshold_compaction: send "Continue." after threshold compaction
-  "auto_resume_after_threshold_compaction": false
+  "auto_resume_after_threshold_compaction": false,
+  // consolidate_on_compact: run /memory consolidate after threshold compaction; false = off
+  "consolidate_on_compact": false
 }
 ```
 

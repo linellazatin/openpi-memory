@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-08-16
+
+### Added
+- `/memory consolidate` command — sends a structured prompt to the agent to scan the conversation and call `write_memory` for each undocumented fact, decision, discovery, or config detail; also writes a `last-session-recap` entry for next-session orientation
+- `CONSOLIDATION_PROMPT` constant in `memory-core.mjs` — used by the manual `/memory consolidate` path (full conversation scan)
+- `buildCompactionConsolidationPrompt(summary)` function in `memory-core.mjs` — targeted prompt that feeds pi's compaction summary directly, skipping the full conversation scan
+- `session_compact` hook to capture `event.compactionEntry.summary` for use by `compaction_end`
+- `consolidate_on_compact` RULES.jsonc config key (boolean, default `false`) — when enabled, fires after threshold compaction instead of the plain `"Continue."` nudge; uses the compaction summary as input
+- `last-session-recap` memory topic — a replace-mode entry written as the final step of consolidation; injected on the next session start as part of the normal `## Global Memory` block
+
+### Changed
+- `MAX_BYTES` increased from 25 KB to 50 KB — needed headroom for indexes that grow through repeated consolidation sessions
+- Default `max_lines` increased from 200 to 300 — more realistic baseline for consolidated usage
+- `max_lines` valid range ceiling raised from 500 to 1000 — power users can configure larger indexes
+- `compaction_end` handler now checks `consolidateOnCompact` before existing auto-resume paths; `consolidate_on_compact: true` supersedes both `auto_resume_after_threshold_compaction` and handoff-aware detection
+- `consolidate_on_compact` path feeds pi's already-generated compaction summary to the agent instead of asking it to re-scan conversation history — one fewer LLM turn; falls back to full scan if no summary is cached
+
 ## [0.1.0] - 2026-08-13
 
 ### Added
