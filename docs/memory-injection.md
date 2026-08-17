@@ -33,7 +33,7 @@ On skipped turns, `## Global Memory` is **absent from the system prompt entirely
 
 - **Between injections, memory is not explicitly in context.** The agent can still act on memories it recalls from earlier in the conversation, but the index is not actively present in the system prompt on every turn.
 
-- **Set `inject_every_n_turns: 1` if you need the index always visible.** This injects on every user prompt. The cost is ~265 tokens of fixed overhead plus ~35 tokens per index entry on every turn — see [Token overhead](architecture.md#token-overhead) below.
+- **Set `inject_every_n_turns: 1` if you need the index always visible.** This injects on every user prompt. The cost is ~265 tokens of fixed overhead plus ~35 tokens per index entry on every turn — see [Token overhead](architecture.md#token-overhead).
 
 - **Context compaction resets injection.** When context is compacted (`session_before_compact`), the injection state resets so the first turn after compaction always re-injects, regardless of where the turn counter was. The compaction handoff (if enabled) is also injected on that first post-compaction turn.
 
