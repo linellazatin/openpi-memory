@@ -188,9 +188,11 @@ If no `## Memory Rules` block is in your context, read `~/.pi/agent/memory.jsonc
     "Hardware, model, or environment facts learned"
   ],
   "never_persist": [
-    "Session-specific context that won't apply to future sessions",
-    "Assumed or inferred preferences — only persist what the user has explicitly stated",
-    "Large blocks of code — summarize instead, or link to the file path"
+    "Code patterns derivable from the codebase or git history",
+    "Debugging fix recipes — the fix is in the commit, not in memory",
+    "Ephemeral task state that won't apply next session",
+    "Things already documented in AGENTS.md or CLAUDE.md",
+    "Large code blocks — summarize or link to the file path instead"
   ],
   "always_ask": [
     "Credentials, tokens, API keys",
