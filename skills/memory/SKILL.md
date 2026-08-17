@@ -13,6 +13,7 @@ Global memory persists across all pi sessions. It lives at:
 └── <topic>.md             # detail files — read on-demand
 
 ~/.pi/agent/memory.jsonc    # persist rules + config — always per-tool, never shared
+~/.pi/agent/HANDOFF.md      # compaction handoff entries (auto-managed, always local)
 ```
 
 ## Available tools

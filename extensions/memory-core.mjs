@@ -24,7 +24,7 @@ import path from 'path';
 const AGENT_DIR = process.env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), '.pi', 'agent');
 const SHARED_HOME_DIR = process.env.PI_SHARED_MEMORY_HOME ?? os.homedir();
 
-// Legacy/default: index + topic files live alongside HANDOFF.md, as before.
+// Legacy/default: index + topic files live in the legacy memory directory.
 const LEGACY_MEMORY_DIR = path.join(AGENT_DIR, 'memory');
 // Shared: index + topic files move here when shared_dir: true, so other tools
 // (e.g. openclaude-memory/opencode) reading the same format can see them too.
@@ -36,8 +36,8 @@ export const MEMORY_RULES = path.join(AGENT_DIR, 'memory.jsonc');
 const LEGACY_MEMORY_RULES = path.join(LEGACY_MEMORY_DIR, 'RULES.jsonc');
 const LEGACY_MEMORY_RULES_BACKUP = path.join(LEGACY_MEMORY_DIR, 'RULES.jsonc.bak');
 
-// HANDOFF.md is a pi-only compaction artifact — always local, never shared.
-export const HANDOFF_FILE = path.join(LEGACY_MEMORY_DIR, 'HANDOFF.md');
+// HANDOFF.md is a pi-only compaction artifact — always local, sibling of memory.jsonc.
+export const HANDOFF_FILE = path.join(AGENT_DIR, 'HANDOFF.md');
 
 // One-time local carry-over backup (see maybeCarryOverLocalMemory below).
 const LOCAL_CARRYOVER_BACKUP_DIR = path.join(AGENT_DIR, 'memory-backup-before-shared-dir');
@@ -204,9 +204,7 @@ export function getMemoryIndex() {
   return path.join(getMemoryDir(), 'MEMORY.md');
 }
 
-function ensureDir(dir) {
-  fs.mkdirSync(dir, { recursive: true });
-}
+
 
 /**
  * Write a file atomically: write to a temp file in the same directory, then rename over the
@@ -232,7 +230,7 @@ function atomicWriteFileSync(filePath, content) {
 export function parseRules() {
   try {
     if (!fs.existsSync(MEMORY_RULES)) {
-      ensureDir(AGENT_DIR);
+      fs.mkdirSync(AGENT_DIR, { recursive: true });
       if (fs.existsSync(LEGACY_MEMORY_RULES)) {
         // Same rationale as the shared_dir carry-over backup: this copy never touches
         // LEGACY_MEMORY_RULES, so the backup isn't strictly needed to prevent data loss here —
@@ -325,7 +323,7 @@ export function readMemoryIndex(maxLines) {
     const memoryDir = getMemoryDir();
     const memoryIndex = path.join(memoryDir, 'MEMORY.md');
     if (!fs.existsSync(memoryIndex)) {
-      ensureDir(memoryDir);
+      fs.mkdirSync(memoryDir, { recursive: true });
       atomicWriteFileSync(memoryIndex, INITIAL_MEMORY);
       return INITIAL_MEMORY;
     }
@@ -535,7 +533,7 @@ export function searchMemory(query) {
   }
 
   // (b) topic file bodies — skip files already matched via index
-  const SKIP = new Set(['MEMORY.md', 'RULES.jsonc', 'HANDOFF.md']);
+  const SKIP = new Set(['MEMORY.md']);
   const memoryDir = getMemoryDir();
   if (!fs.existsSync(memoryDir)) return results;
   for (const file of fs.readdirSync(memoryDir)) {
@@ -586,7 +584,7 @@ async function acquireLock(lockPath) {
 
 async function withLock(fn) {
   const memoryDir = getMemoryDir();
-  ensureDir(memoryDir);
+  fs.mkdirSync(memoryDir, { recursive: true });
   const lockPath = path.join(memoryDir, '.lock');
   await acquireLock(lockPath);
   try {
@@ -605,7 +603,7 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
   return withLock(() => {
     const memoryDir = getMemoryDir();
     const memoryIndex = path.join(memoryDir, 'MEMORY.md');
-    ensureDir(memoryDir);
+    fs.mkdirSync(memoryDir, { recursive: true });
 
     // Read index once — reused for topic-name lookup and upsert
     const rawIndex = fs.existsSync(memoryIndex)
@@ -745,7 +743,12 @@ export function writeHandoff(messages, reason, handoffKeep = DEFAULT_HANDOFF_KEE
 
   const entry = `## ${nowIso()} (${reason})\n\n${bullets.join('\n')}\n`;
 
-  ensureDir(LEGACY_MEMORY_DIR);
+  // One-time migration: if new path doesn't exist but old path does, copy content forward.
+  // Old file stays on disk (never deleted), becomes inert.
+  const oldHandoffPath = path.join(LEGACY_MEMORY_DIR, 'HANDOFF.md');
+  if (!fs.existsSync(HANDOFF_FILE) && fs.existsSync(oldHandoffPath)) {
+    fs.copyFileSync(oldHandoffPath, HANDOFF_FILE);
+  }
   const existing = fs.existsSync(HANDOFF_FILE) ? fs.readFileSync(HANDOFF_FILE, 'utf8') : '';
   const updated = existing + (existing.endsWith('\n') || !existing ? '' : '\n') + '\n' + entry;
 
