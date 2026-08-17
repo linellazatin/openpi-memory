@@ -39,8 +39,9 @@ Starting state:
 ~/.pi/agent/memory/
 ├── MEMORY.md              # your real entries
 ├── RULES.jsonc            # your custom config
-├── HANDOFF.md             # if a compaction happened recently
 └── <topic>.md files...
+
+~/.pi/agent/HANDOFF.md     # if a compaction happened recently (always local)
 ```
 
 1. **`session_start` fires.** `parseRules()` finds no `~/.pi/agent/memory.jsonc`, but finds your legacy `~/.pi/agent/memory/RULES.jsonc`. It backs that up to `RULES.jsonc.bak` (one-time — skipped on future runs) and copies its content forward into the new `memory.jsonc`. Your original `RULES.jsonc` is never deleted, moved, or modified. `readMemoryIndex()` then resolves the memory dir — still `~/.pi/agent/memory/`, since `shared_dir` isn't in your old config and defaults to `false` — and finds your real `MEMORY.md` already there, so it just reads it back untouched.
@@ -55,13 +56,14 @@ Resulting state — two new files added, nothing removed:
     ├── MEMORY.md            # unchanged
     ├── RULES.jsonc           # unchanged, now inert
     ├── RULES.jsonc.bak       # NEW — safety backup
-    ├── HANDOFF.md            # unchanged
     └── <topic>.md files...   # unchanged
+
+~/.pi/agent/HANDOFF.md      # unchanged — always local, never in memory/
 ```
 
 Net effect: the agent's first turn after upgrading behaves exactly as it did before. Your memory content, rules, and handoff behavior are all preserved as-is.
 
-**If you then opt into `shared_dir: true`** by editing `memory.jsonc`, the next `getMemoryDir()` call triggers a one-time carry-over: `MEMORY.md` and your topic files (never `HANDOFF.md`, which always stays local) are backed up to `~/.pi/agent/memory-backup-before-shared-dir/`, then copied — never moved — into `~/.agents/memory/`. Your original `~/.pi/agent/memory/` directory is left fully intact:
+**If you then opt into `shared_dir: true`** by editing `memory.jsonc`, the next `getMemoryDir()` call triggers a one-time carry-over: `MEMORY.md` and your topic files (never `HANDOFF.md`, which always stays local at `~/.pi/agent/HANDOFF.md`) are backed up to `~/.pi/agent/memory-backup-before-shared-dir/`, then copied — never moved — into `~/.agents/memory/`. Your original `~/.pi/agent/memory/` directory is left fully intact:
 
 ```
 ~/.pi/agent/
@@ -73,8 +75,9 @@ Net effect: the agent's first turn after upgrading behaves exactly as it did bef
     ├── MEMORY.md
     ├── RULES.jsonc
     ├── RULES.jsonc.bak
-    ├── HANDOFF.md                        # stays local, never migrates
     └── <topic>.md files...
+
+~/.pi/agent/HANDOFF.md                      # stays local, never migrates
 
 ~/.agents/memory/                          # NEW — active storage now
 ├── MEMORY.md

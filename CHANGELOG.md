@@ -15,6 +15,7 @@ All notable changes to this project will be documented in this file.
 - Config file renamed and relocated: `RULES.jsonc` (inside `memory/`) → `memory.jsonc` (one level up, sibling of `memory/`) — config now always stays per-tool regardless of `shared_dir`
 - `parseRules()` falls back to the legacy `RULES.jsonc` path when `memory.jsonc` doesn't exist yet: backs it up to `RULES.jsonc.bak`, then copies its content forward; the legacy file is never deleted or moved
 - `maintainIndex()` now accepts an optional `memoryDir` parameter (defaults to the resolved active directory) instead of referencing a fixed constant
+- `HANDOFF.md` relocated from `~/.pi/agent/memory/HANDOFF.md` to `~/.pi/agent/HANDOFF.md` (sibling of `memory.jsonc`) — compaction handoff is pi-specific and never affected by `shared_dir`; old file is never deleted, content is copied forward on first write after upgrade
 
 ## [0.2.0] - 2026-08-16
 

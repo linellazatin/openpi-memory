@@ -19,7 +19,7 @@ No. The config rename (`RULES.jsonc` → `memory.jsonc`) and the `shared_dir` ca
 Read the `shared_dir` value directly from `~/.pi/agent/memory.jsonc` — it's the only place this is configured, and it's always read fresh on every call (no caching). You can also infer it indirectly: if `~/.agents/memory/MEMORY.md` exists, `shared_dir` has been `true` at least once.
 
 **Q: I opted in to `shared_dir`. Where did my memories go — are my old files gone?**
-Your old files are untouched at `~/.pi/agent/memory/`. Opting in copies (never moves) `MEMORY.md` and topic files into `~/.agents/memory/`, and backs the originals up a second time to `~/.pi/agent/memory-backup-before-shared-dir/` before doing so. `HANDOFF.md` is deliberately excluded from both the shared dir and the backup — it always stays at `~/.pi/agent/memory/HANDOFF.md`, since compaction handoff is a pi-only feature, not part of the shared cross-tool format.
+Your old files are untouched at `~/.pi/agent/memory/`. Opting in copies (never moves) `MEMORY.md` and topic files into `~/.agents/memory/`, and backs the originals up a second time to `~/.pi/agent/memory-backup-before-shared-dir/` before doing so. `HANDOFF.md` is deliberately excluded from both the shared dir and the backup — it always stays at `~/.pi/agent/HANDOFF.md`, since compaction handoff is a pi-only feature, not part of the shared cross-tool format.
 
 **Q: If I opt in, then opt out, then opt in again — does everything stay in sync?**
 **No — this is the biggest watch-out.** Toggling `shared_dir` is a one-time, one-directional migration, not a live sync:

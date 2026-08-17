@@ -12,7 +12,11 @@ A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory)
 > ## v0.3.0 - MAJOR structural change
 > - `shared_dir` now a thing in the [config](docs/configuration.md#memoryjsonc) - you can opt-in on putting your memory entries (and index) to ~/.agents/memory and be SHARED between our "openlines" (lol) memory handlers for opencode ([openclaude-memory](https://github.com/linellazatin/openclaude-memory)) *(still on planning stages - to follow updates)* & pi coding agent ([openpi-memory](https://github.com/linellazatin/openpi-memory)); opting out (toggling to false) would just fallback to using our original ~/.pi/agent/memory for index and entries, but would still use the memory.jsonc config file starting this `0.3.0`.
 > - opting-in to `shared_dir` is somehow 'seamless' - see [FAQs](docs/faq.md).
-> 
+> - starting this version, the `HANDOFF` file is now living in `AGENT_DIR` (same level as memory.jsonc config file)
+>
+> ```
+> and guys, sorry for multiple (MAJOR) structural modifications - all of these just came flashing into my brain, and I can't help but OBEY my mind! 
+> ```
 > see [CHANGELOG](CHANGELOG.md) for more details
 
 ## Table of contents
@@ -72,10 +76,10 @@ Just files, structure, and an agent that knows where to look.
 ```
 ~/.pi/agent/memory/          # or ~/.agents/memory/ if shared_dir: true
 ├── MEMORY.md              # index — injected into every session automatically
-├── HANDOFF.md             # compaction handoff entries (auto-managed, always local)
 └── <topic>.md             # per-topic detail files, created by write_memory
 
 ~/.pi/agent/memory.jsonc    # persist rules + config — always per-tool, never shared
+~/.pi/agent/HANDOFF.md      # compaction handoff entries (auto-managed, always local)
 ```
 
 All files are plain text. You can read, edit, and delete them at any time. The default location respects `PI_CODING_AGENT_DIR` if set (pi's config-dir override).
