@@ -54,6 +54,21 @@ export const DEFAULT_CONSOLIDATE_ON_COMPACT = false;
 export const DEFAULT_SHARED_DIR = false;
 const LOCK_STALE_MS = 10 * 1000;
 
+// Single source of truth for parseRules()' fallback values — used both when a field is
+// missing/invalid in memory.jsonc and when the whole file fails to read/parse.
+const DEFAULT_RULES = {
+  alwaysPersist: [],
+  neverPersist: [],
+  alwaysAsk: [],
+  maxLines: MAX_LINES,
+  staleAfterDays: DEFAULT_STALE_DAYS,
+  injectEveryNTurns: DEFAULT_INJECT_INTERVAL,
+  handoffKeep: DEFAULT_HANDOFF_KEEP,
+  autoResumeAfterThreshold: DEFAULT_AUTO_RESUME_AFTER_THRESHOLD,
+  consolidateOnCompact: DEFAULT_CONSOLIDATE_ON_COMPACT,
+  sharedDir: DEFAULT_SHARED_DIR,
+};
+
 /**
  * Prompt sent to the agent by /memory consolidate and compaction_end consolidation path.
  * Instructs the agent to extract undocumented facts from the conversation and persist them,
@@ -149,7 +164,10 @@ function maybeCarryOverLocalMemory() {
   const carryable = fs.readdirSync(LEGACY_MEMORY_DIR)
     .filter(f => f.endsWith('.md') && f !== 'HANDOFF.md'); // MEMORY.md + topic files; HANDOFF.md stays local always
 
-  // 1. Backup first — the legacy dir and its files are never touched destructively.
+  // 1. Backup first — the legacy dir and its files are never touched destructively, so this
+  //    backup is not strictly needed to prevent data loss from the copy below. It's a deliberate
+  //    safety net against a future code change to this function (e.g. a copy that becomes a
+  //    move) — kept intentionally, not an oversight.
   fs.mkdirSync(LOCAL_CARRYOVER_BACKUP_DIR, { recursive: true });
   for (const file of carryable) {
     const backupDest = path.join(LOCAL_CARRYOVER_BACKUP_DIR, file);
@@ -216,6 +234,9 @@ export function parseRules() {
     if (!fs.existsSync(MEMORY_RULES)) {
       ensureDir(AGENT_DIR);
       if (fs.existsSync(LEGACY_MEMORY_RULES)) {
+        // Same rationale as the shared_dir carry-over backup: this copy never touches
+        // LEGACY_MEMORY_RULES, so the backup isn't strictly needed to prevent data loss here —
+        // it's a deliberate safety net against a future code change, kept intentionally.
         if (!fs.existsSync(LEGACY_MEMORY_RULES_BACKUP)) {
           fs.copyFileSync(LEGACY_MEMORY_RULES, LEGACY_MEMORY_RULES_BACKUP);
         }
@@ -231,30 +252,19 @@ export function parseRules() {
     const obj = JSON.parse(stripped);
 
     return {
-      alwaysPersist: Array.isArray(obj.always_persist) ? obj.always_persist : [],
-      neverPersist:  Array.isArray(obj.never_persist)  ? obj.never_persist  : [],
-      alwaysAsk:     Array.isArray(obj.always_ask)     ? obj.always_ask     : [],
-      maxLines:          Math.min(1000, Math.max(50,  typeof obj.max_lines           === 'number' ? obj.max_lines           : MAX_LINES)),
-      staleAfterDays:    Math.max(0,               typeof obj.stale_after_days     === 'number' ? obj.stale_after_days     : DEFAULT_STALE_DAYS),
-      injectEveryNTurns: Math.max(1,               typeof obj.inject_every_n_turns  === 'number' ? obj.inject_every_n_turns  : DEFAULT_INJECT_INTERVAL),
-      handoffKeep:       Math.max(0,               typeof obj.handoff_keep          === 'number' ? obj.handoff_keep          : DEFAULT_HANDOFF_KEEP),
-      autoResumeAfterThreshold: typeof obj.auto_resume_after_threshold_compaction === 'boolean' ? obj.auto_resume_after_threshold_compaction : DEFAULT_AUTO_RESUME_AFTER_THRESHOLD,
-      consolidateOnCompact: typeof obj.consolidate_on_compact === 'boolean' ? obj.consolidate_on_compact : DEFAULT_CONSOLIDATE_ON_COMPACT,
-      sharedDir: typeof obj.shared_dir === 'boolean' ? obj.shared_dir : DEFAULT_SHARED_DIR,
+      alwaysPersist: Array.isArray(obj.always_persist) ? obj.always_persist : DEFAULT_RULES.alwaysPersist,
+      neverPersist:  Array.isArray(obj.never_persist)  ? obj.never_persist  : DEFAULT_RULES.neverPersist,
+      alwaysAsk:     Array.isArray(obj.always_ask)     ? obj.always_ask     : DEFAULT_RULES.alwaysAsk,
+      maxLines:          Math.min(1000, Math.max(50,  typeof obj.max_lines           === 'number' ? obj.max_lines           : DEFAULT_RULES.maxLines)),
+      staleAfterDays:    Math.max(0,               typeof obj.stale_after_days     === 'number' ? obj.stale_after_days     : DEFAULT_RULES.staleAfterDays),
+      injectEveryNTurns: Math.max(1,               typeof obj.inject_every_n_turns  === 'number' ? obj.inject_every_n_turns  : DEFAULT_RULES.injectEveryNTurns),
+      handoffKeep:       Math.max(0,               typeof obj.handoff_keep          === 'number' ? obj.handoff_keep          : DEFAULT_RULES.handoffKeep),
+      autoResumeAfterThreshold: typeof obj.auto_resume_after_threshold_compaction === 'boolean' ? obj.auto_resume_after_threshold_compaction : DEFAULT_RULES.autoResumeAfterThreshold,
+      consolidateOnCompact: typeof obj.consolidate_on_compact === 'boolean' ? obj.consolidate_on_compact : DEFAULT_RULES.consolidateOnCompact,
+      sharedDir: typeof obj.shared_dir === 'boolean' ? obj.shared_dir : DEFAULT_RULES.sharedDir,
     };
   } catch {
-    return {
-      alwaysPersist: [],
-      neverPersist:  [],
-      alwaysAsk:     [],
-      maxLines:          MAX_LINES,
-      staleAfterDays:    DEFAULT_STALE_DAYS,
-      injectEveryNTurns: DEFAULT_INJECT_INTERVAL,
-      handoffKeep:       DEFAULT_HANDOFF_KEEP,
-      autoResumeAfterThreshold: DEFAULT_AUTO_RESUME_AFTER_THRESHOLD,
-      consolidateOnCompact: DEFAULT_CONSOLIDATE_ON_COMPACT,
-      sharedDir: DEFAULT_SHARED_DIR,
-    };
+    return { ...DEFAULT_RULES };
   }
 }
 
