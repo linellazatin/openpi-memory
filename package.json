@@ -1,6 +1,6 @@
 {
   "name": "@openlines/openpi-memory",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Global persistent memory for pi coding agent sessions via MEMORY.md injection",
   "keywords": ["pi-package"],
   "license": "MIT",

@@ -8,10 +8,12 @@ description: "Read and write global persistent memory across pi sessions"
 Global memory persists across all pi sessions. It lives at:
 
 ```
-~/.pi/agent/memory/
+~/.pi/agent/memory/          # or ~/.agents/memory/ if shared_dir: true
 ├── MEMORY.md              # index — injected into every session automatically
-├── RULES.jsonc            # persist rules + config
 └── <topic>.md             # detail files — read on-demand
+
+~/.pi/agent/memory.jsonc    # persist rules + config — always per-tool, never shared
+~/.pi/agent/HANDOFF.md      # compaction handoff entries (auto-managed, always local)
 ```
 
 ## Available tools
@@ -26,9 +28,9 @@ The extension registers three native tools. Use these instead of raw Write/Edit 
 
 ## Reading memory
 
-`MEMORY.md` is injected into your system prompt on the first user prompt of each session, and every `inject_every_n_turns` user prompts thereafter (default: 5; set to 1 in `RULES.jsonc` for every-prompt injection).
+`MEMORY.md` is injected into your system prompt on the first user prompt of each session, and every `inject_every_n_turns` user prompts thereafter (default: 5; set to 1 in `memory.jsonc` for every-prompt injection).
 
-If `## Global Memory` is not in your current context, read it directly:
+If `## Global Memory` is not in your current context, read it directly (path depends on `shared_dir` — see "## Memory Rules" injected context or `memory.jsonc` for the active location):
 
 ```
 Read ~/.pi/agent/memory/MEMORY.md
@@ -120,7 +122,7 @@ Each entry in `MEMORY.md` follows this format:
 
 ## Stale entries
 
-The extension stamps `[stale?]` on index entries older than `stale_after_days` (default 180, configurable in `RULES.jsonc`). The flag appears in the index line after the date:
+The extension stamps `[stale?]` on index entries older than `stale_after_days` (default 180, configurable in `memory.jsonc`). The flag appears in the index line after the date:
 
 ```
 - [Topic Name](file.md) 2025-11-01 [stale?] -- summary
@@ -164,17 +166,17 @@ The `/memory` command provides an interactive TUI browser. From it you can:
 
 `/memory search <query>` opens the same browser pre-filtered to matching entries.
 
-`/memory consolidate` instructs the agent to scan the current conversation and call `write_memory` for each undocumented fact, decision, discovery, or config detail. As a final step it writes a `last-session-recap` entry (`mode: replace`) — a brief narrative of what was accomplished — which is injected into the system prompt at the start of the next session. Use at natural session breakpoints or before switching context. Enable `consolidate_on_compact: true` in `RULES.jsonc` to run this automatically after threshold compaction.
+`/memory consolidate` instructs the agent to scan the current conversation and call `write_memory` for each undocumented fact, decision, discovery, or config detail. As a final step it writes a `last-session-recap` entry (`mode: replace`) — a brief narrative of what was accomplished — which is injected into the system prompt at the start of the next session. Use at natural session breakpoints or before switching context. Enable `consolidate_on_compact: true` in `memory.jsonc` to run this automatically after threshold compaction.
 
 ## Persist rules
 
-Your persist rules are in `~/.pi/agent/memory/RULES.jsonc` and are injected into your context under `## Memory Rules` on the first prompt of each session and every `inject_every_n_turns` prompts thereafter.
+Your persist rules are in `~/.pi/agent/memory.jsonc` and are injected into your context under `## Memory Rules` on the first prompt of each session and every `inject_every_n_turns` prompts thereafter.
 
-If no `## Memory Rules` block is in your context, read `~/.pi/agent/memory/RULES.jsonc` directly.
+If no `## Memory Rules` block is in your context, read `~/.pi/agent/memory.jsonc` directly.
 
-## Editing RULES.jsonc
+## Editing memory.jsonc
 
-`RULES.jsonc` is a JSON file with comment support (`//` line comments are valid). Example:
+`memory.jsonc` is a JSON file with comment support (`//` line comments are valid). If upgrading from an older version, the legacy `~/.pi/agent/memory/RULES.jsonc` is read as a fallback, backed up to `RULES.jsonc.bak` alongside it, and copied forward automatically — nothing legacy is deleted or moved. Example:
 
 ```jsonc
 {
@@ -187,9 +189,11 @@ If no `## Memory Rules` block is in your context, read `~/.pi/agent/memory/RULES
     "Hardware, model, or environment facts learned"
   ],
   "never_persist": [
-    "Session-specific context that won't apply to future sessions",
-    "Assumed or inferred preferences — only persist what the user has explicitly stated",
-    "Large blocks of code — summarize instead, or link to the file path"
+    "Code patterns derivable from the codebase or git history",
+    "Debugging fix recipes — the fix is in the commit, not in memory",
+    "Ephemeral task state that won't apply next session",
+    "Things already documented in AGENTS.md or CLAUDE.md",
+    "Large code blocks — summarize or link to the file path instead"
   ],
   "always_ask": [
     "Credentials, tokens, API keys",
@@ -207,7 +211,10 @@ If no `## Memory Rules` block is in your context, read `~/.pi/agent/memory/RULES
   // auto_resume_after_threshold_compaction: send "Continue." after threshold compaction
   "auto_resume_after_threshold_compaction": false,
   // consolidate_on_compact: run /memory consolidate after threshold compaction; false = off
-  "consolidate_on_compact": false
+  "consolidate_on_compact": false,
+  // shared_dir: redirect the memory index and topic files to ~/.agents/memory/, shared across
+  // tools using the same on-disk format. Does not affect where this config file lives. false = off
+  "shared_dir": false
 }
 ```
 

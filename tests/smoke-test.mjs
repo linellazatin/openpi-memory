@@ -4,7 +4,9 @@
  * Run: node test.mjs
  *
  * STATE ISOLATION:
- * MEMORY_DIR is fixed at memory-core load time from PI_CODING_AGENT_DIR.
+ * PI_CODING_AGENT_DIR is fixed at memory-core load time; getMemoryDir()/getMemoryIndex()
+ * resolve fresh on every call based on parseRules().sharedDir (default false, so they
+ * resolve under PI_CODING_AGENT_DIR/memory/ unless a test explicitly sets shared_dir: true).
  * We set PI_CODING_AGENT_DIR to a temp dir before the dynamic import so
  * the module initialises against the temp dir for the entire run.
  *
@@ -21,13 +23,19 @@ import path from 'path';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'openpi-memory-test-'));
 process.env.PI_CODING_AGENT_DIR = TMP;
 
-process.on('exit', () => fs.rmSync(TMP, { recursive: true, force: true }));
+const SHARED_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'openpi-memory-shared-home-'));
+process.env.PI_SHARED_MEMORY_HOME = SHARED_HOME;
+
+process.on('exit', () => {
+  fs.rmSync(TMP, { recursive: true, force: true });
+  fs.rmSync(SHARED_HOME, { recursive: true, force: true });
+});
 
 // ── Import core (after PI_CODING_AGENT_DIR is set) ────────────────────────
 
 const {
-  MEMORY_DIR,
-  MEMORY_INDEX,
+  getMemoryDir,
+  getMemoryIndex,
   MEMORY_RULES,
   HANDOFF_FILE,
   DEFAULT_AUTO_RESUME_AFTER_THRESHOLD,
@@ -67,15 +75,15 @@ async function test(name, fn) {
   }
 }
 
-// Helper: write RULES.jsonc with custom content
+// Helper: write memory.jsonc with custom content
 function writeRules(content) {
-  fs.mkdirSync(MEMORY_DIR, { recursive: true });
+  fs.mkdirSync(path.dirname(MEMORY_RULES), { recursive: true });
   fs.writeFileSync(MEMORY_RULES, content, 'utf8');
 }
 
 // Helper: read MEMORY.md
 function readIndex() {
-  return fs.existsSync(MEMORY_INDEX) ? fs.readFileSync(MEMORY_INDEX, 'utf8') : null;
+  return fs.existsSync(getMemoryIndex()) ? fs.readFileSync(getMemoryIndex(), 'utf8') : null;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -275,8 +283,8 @@ await test('upsertIndexLine: preserves existing pin on update', async () => {
 
 await test('maintainIndex: removes orphaned entries', async () => {
   // Create a fake topic file, add to index, then delete the file
-  fs.mkdirSync(MEMORY_DIR, { recursive: true });
-  const orphanPath = path.join(MEMORY_DIR, 'orphan.md');
+  fs.mkdirSync(getMemoryDir(), { recursive: true });
+  const orphanPath = path.join(getMemoryDir(), 'orphan.md');
   fs.writeFileSync(orphanPath, '---\nname: Orphan\n---\n', 'utf8');
 
   let lines = ['# Memory Index', '- [Orphan](orphan.md) 2026-01-01 -- orphan entry'];
@@ -288,8 +296,8 @@ await test('maintainIndex: removes orphaned entries', async () => {
 });
 
 await test('maintainIndex: deduplicates by filename (keeps newer date)', async () => {
-  fs.mkdirSync(MEMORY_DIR, { recursive: true });
-  const dupPath = path.join(MEMORY_DIR, 'dup.md');
+  fs.mkdirSync(getMemoryDir(), { recursive: true });
+  const dupPath = path.join(getMemoryDir(), 'dup.md');
   fs.writeFileSync(dupPath, '---\nname: Dup\n---\n', 'utf8');
 
   const lines = [
@@ -306,8 +314,8 @@ await test('maintainIndex: deduplicates by filename (keeps newer date)', async (
 });
 
 await test('maintainIndex: stamps [stale?] on old entries', async () => {
-  fs.mkdirSync(MEMORY_DIR, { recursive: true });
-  const stalePath = path.join(MEMORY_DIR, 'stale-topic.md');
+  fs.mkdirSync(getMemoryDir(), { recursive: true });
+  const stalePath = path.join(getMemoryDir(), 'stale-topic.md');
   fs.writeFileSync(stalePath, '---\nname: Stale\n---\n', 'utf8');
 
   const lines = ['- [Stale](stale-topic.md) 2020-01-01 -- very old'];
@@ -318,8 +326,8 @@ await test('maintainIndex: stamps [stale?] on old entries', async () => {
 });
 
 await test('maintainIndex: stale_after_days=0 disables stale flagging', async () => {
-  fs.mkdirSync(MEMORY_DIR, { recursive: true });
-  const nostale = path.join(MEMORY_DIR, 'nostale.md');
+  fs.mkdirSync(getMemoryDir(), { recursive: true });
+  const nostale = path.join(getMemoryDir(), 'nostale.md');
   fs.writeFileSync(nostale, '---\nname: NoStale\n---\n', 'utf8');
 
   const lines = ['- [NoStale](nostale.md) 2020-01-01 -- old but no stale flag'];
@@ -336,8 +344,8 @@ await test('maintainIndex: stale_after_days=0 disables stale flagging', async ()
 console.log('\n--- 5. write_memory ---');
 
 // Reset index for clean tool tests
-fs.mkdirSync(MEMORY_DIR, { recursive: true });
-fs.writeFileSync(MEMORY_INDEX, '# Memory Index\n\n', 'utf8');
+fs.mkdirSync(getMemoryDir(), { recursive: true });
+fs.writeFileSync(getMemoryIndex(), '# Memory Index\n\n', 'utf8');
 writeRules('{ "max_lines": 200, "stale_after_days": 180, "inject_every_n_turns": 5 }');
 
 await test('write_memory: creates topic file and index entry', async () => {
@@ -356,7 +364,7 @@ await test('write_memory: creates topic file and index entry', async () => {
   assert.ok(idx.includes('Postgres connection config'), 'summary in index');
 
   // frontmatter: both created and last_updated with time
-  const topicContent = fs.readFileSync(path.join(MEMORY_DIR, 'postgresql-setup.md'), 'utf8');
+  const topicContent = fs.readFileSync(path.join(getMemoryDir(), 'postgresql-setup.md'), 'utf8');
   assert.ok(topicContent.includes('created:'), 'created field present');
   assert.ok(topicContent.includes('last_updated:'), 'last_updated field present');
   assert.ok(/created: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}/.test(topicContent), 'created has datetime with tz offset');
@@ -378,7 +386,7 @@ await test('write_memory: second write appends with date heading and updates las
   });
   assert.ok(result.includes('Updated'), 'result says Updated');
 
-  const topicPath = path.join(MEMORY_DIR, 'postgresql-setup.md');
+  const topicPath = path.join(getMemoryDir(), 'postgresql-setup.md');
   const content = fs.readFileSync(topicPath, 'utf8');
   assert.ok(content.includes('## '), 'date heading appended');
   assert.ok(/last_updated: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}/.test(content), 'last_updated refreshed');
@@ -394,7 +402,7 @@ await test('write_memory: mode=replace replaces body, preserves frontmatter, upd
     pin: false,
     mode: 'replace',
   });
-  const topicPath = path.join(MEMORY_DIR, 'postgresql-setup.md');
+  const topicPath = path.join(getMemoryDir(), 'postgresql-setup.md');
   const content = fs.readFileSync(topicPath, 'utf8');
   assert.ok(content.includes('Replaced:'), 'new content present');
   assert.ok(!content.includes('Connection string: postgres://localhost'), 'old content gone');
@@ -411,7 +419,7 @@ await test('write_memory: mode=replace does not duplicate content across multipl
     pin: false,
     mode: 'replace',
   });
-  const content = fs.readFileSync(path.join(MEMORY_DIR, 'postgresql-setup.md'), 'utf8');
+  const content = fs.readFileSync(path.join(getMemoryDir(), 'postgresql-setup.md'), 'utf8');
   assert.ok(!content.includes('Replaced:'), 'previous replace body gone');
   assert.ok(content.includes('Final state:'), 'latest content present');
   assert.equal((content.match(/Final state:/g) || []).length, 1, 'no duplicate body');
@@ -424,7 +432,7 @@ await test('write_memory: overwrite=true (legacy) behaves same as mode=replace',
     summary: 'Postgres connection config',
     overwrite: true,
   });
-  const content = fs.readFileSync(path.join(MEMORY_DIR, 'postgresql-setup.md'), 'utf8');
+  const content = fs.readFileSync(path.join(getMemoryDir(), 'postgresql-setup.md'), 'utf8');
   assert.ok(content.includes('Legacy overwrite:'), 'overwrite compat: new content present');
   assert.ok(!content.includes('Final state:'), 'overwrite compat: old content gone');
   assert.equal((content.match(/^## \d{4}-\d{2}-\d{2}/mg) || []).length, 0, 'no date heading');
@@ -490,7 +498,7 @@ await test('remove_memory: removes index entry, file stays on disk', async () =>
     summary: 'Temp notes',
     pin: false,
   });
-  const filePath = path.join(MEMORY_DIR, 'temp-notes.md');
+  const filePath = path.join(getMemoryDir(), 'temp-notes.md');
   assert.ok(fs.existsSync(filePath), 'file exists before remove');
 
   const result = await executeRemoveMemory({ topic: 'Temp Notes' });
@@ -626,7 +634,7 @@ await test('searchMemory: matches by summary', async () => {
 
 await test('searchMemory: matches in topic body', async () => {
   // Manually create a file not tracked in index to test body-only path
-  const orphan = path.join(MEMORY_DIR, 'orphan-body.md');
+  const orphan = path.join(getMemoryDir(), 'orphan-body.md');
   fs.writeFileSync(orphan, 'This file has a unique_body_token inside.', 'utf8');
   const results = searchMemory('unique_body_token');
   assert.ok(results.some(r => r.filename === 'orphan-body.md'), 'found in body');
@@ -772,6 +780,120 @@ await test('contains write_memory instruction', async () => {
 await test('contains last-session-recap instruction', async () => {
   const prompt = buildCompactionConsolidationPrompt('test summary');
   assert.ok(prompt.includes('last-session-recap'), 'mentions last-session-recap');
+});
+
+console.log('\n--- 14. shared_dir / legacy fallback / carry-over / lock / atomic writes ---');
+
+const LEGACY_DIR_PATH = path.join(TMP, 'memory');
+const LEGACY_RULES_PATH = path.join(LEGACY_DIR_PATH, 'RULES.jsonc');
+const LEGACY_RULES_BACKUP_PATH = path.join(LEGACY_DIR_PATH, 'RULES.jsonc.bak');
+const SHARED_DIR_PATH = path.join(SHARED_HOME, '.agents', 'memory');
+
+await test('shared_dir defaults to false', async () => {
+  if (fs.existsSync(MEMORY_RULES)) fs.unlinkSync(MEMORY_RULES);
+  const r = parseRules();
+  assert.equal(r.sharedDir, false, 'default false');
+});
+
+await test('shared_dir=true from JSONC', async () => {
+  writeRules('{ "shared_dir": true }');
+  const r = parseRules();
+  assert.equal(r.sharedDir, true, 'should parse true');
+});
+
+await test('shared_dir=false from JSONC', async () => {
+  writeRules('{ "shared_dir": false }');
+  const r = parseRules();
+  assert.equal(r.sharedDir, false, 'should parse false');
+});
+
+await test('legacy RULES.jsonc fallback: backs up, copies forward, original untouched', async () => {
+  if (fs.existsSync(MEMORY_RULES)) fs.unlinkSync(MEMORY_RULES);
+  if (fs.existsSync(LEGACY_RULES_BACKUP_PATH)) fs.unlinkSync(LEGACY_RULES_BACKUP_PATH);
+  fs.mkdirSync(LEGACY_DIR_PATH, { recursive: true });
+  const legacyContent = '{ "max_lines": 123, "shared_dir": false }';
+  fs.writeFileSync(LEGACY_RULES_PATH, legacyContent, 'utf8');
+
+  const r = parseRules();
+  assert.equal(r.maxLines, 123, 'reads values from legacy file');
+  assert.ok(fs.existsSync(MEMORY_RULES), 'new memory.jsonc created');
+  assert.ok(fs.existsSync(LEGACY_RULES_BACKUP_PATH), 'backup created before copy');
+  assert.equal(fs.readFileSync(LEGACY_RULES_BACKUP_PATH, 'utf8'), legacyContent, 'backup matches original');
+  assert.ok(fs.existsSync(LEGACY_RULES_PATH), 'original legacy file still exists');
+  assert.equal(fs.readFileSync(LEGACY_RULES_PATH, 'utf8'), legacyContent, 'original legacy file unchanged');
+});
+
+await test('getMemoryDir resolves to legacy dir when shared_dir=false', async () => {
+  writeRules('{ "shared_dir": false }');
+  assert.equal(getMemoryDir(), LEGACY_DIR_PATH, 'resolves to legacy dir');
+});
+
+await test('local carry-over: enabling shared_dir backs up and copies, never deletes legacy files', async () => {
+  await executeWriteMemory({ topic: 'Carryover Fixture', content: 'carry me over', summary: 'fixture' });
+  const legacyFiles = fs.readdirSync(LEGACY_DIR_PATH).filter(f => f.endsWith('.md') && f !== 'HANDOFF.md');
+  const legacyContentsBefore = new Map(legacyFiles.map(f => [f, fs.readFileSync(path.join(LEGACY_DIR_PATH, f), 'utf8')]));
+  assert.ok(fs.existsSync(HANDOFF_FILE), 'sanity: HANDOFF.md exists from an earlier test, to exercise the exclusion');
+
+  writeRules('{ "shared_dir": true }');
+  const resolved = getMemoryDir(); // triggers maybeCarryOverLocalMemory as a side effect
+  assert.equal(resolved, SHARED_DIR_PATH, 'resolves to shared dir once enabled');
+
+  const backupDir = path.join(TMP, 'memory-backup-before-shared-dir');
+  assert.ok(!fs.existsSync(path.join(backupDir, 'HANDOFF.md')), 'HANDOFF.md is not backed up — stays local always');
+  assert.ok(!fs.existsSync(path.join(SHARED_DIR_PATH, 'HANDOFF.md')), 'HANDOFF.md is not copied to the shared dir');
+  for (const f of legacyFiles) {
+    assert.ok(fs.existsSync(path.join(backupDir, f)), `backup contains ${f}`);
+    assert.ok(fs.existsSync(path.join(SHARED_DIR_PATH, f)), `shared dir contains ${f}`);
+    assert.equal(
+      fs.readFileSync(path.join(SHARED_DIR_PATH, f), 'utf8'),
+      legacyContentsBefore.get(f),
+      `${f} copied byte-for-byte`
+    );
+  }
+  for (const f of legacyFiles) {
+    assert.ok(fs.existsSync(path.join(LEGACY_DIR_PATH, f)), `legacy ${f} still exists`);
+    assert.equal(fs.readFileSync(path.join(LEGACY_DIR_PATH, f), 'utf8'), legacyContentsBefore.get(f), `legacy ${f} unchanged`);
+  }
+});
+
+await test('local carry-over runs only once: new legacy-only entries are not retroactively copied', async () => {
+  writeRules('{ "shared_dir": false }');
+  await executeWriteMemory({ topic: 'Legacy Only Entry', content: 'stays in legacy', summary: 'legacy-only' });
+  writeRules('{ "shared_dir": true }');
+  getMemoryDir(); // would re-trigger carry-over if the guard were broken
+  assert.ok(!fs.existsSync(path.join(SHARED_DIR_PATH, 'legacy-only-entry.md')), 'not copied — carry-over already completed once');
+});
+
+await test('lock: concurrent writes are serialized without corrupting the index', async () => {
+  writeRules('{ "shared_dir": false }');
+  await Promise.all([
+    executeWriteMemory({ topic: 'Concurrent A', content: 'a', summary: 'a' }),
+    executeWriteMemory({ topic: 'Concurrent B', content: 'b', summary: 'b' }),
+  ]);
+  const entries = readIndexEntries();
+  assert.ok(entries.some(e => e.filename === 'concurrent-a.md'), 'entry A present');
+  assert.ok(entries.some(e => e.filename === 'concurrent-b.md'), 'entry B present');
+  const raw = readIndex();
+  assert.equal((raw.match(/concurrent-a\.md/g) || []).length, 1, 'A appears exactly once — no corrupted duplicate');
+  assert.equal((raw.match(/concurrent-b\.md/g) || []).length, 1, 'B appears exactly once — no corrupted duplicate');
+});
+
+await test('lock: a stale lock is reclaimed instead of blocking forever', async () => {
+  const memoryDir = getMemoryDir();
+  const lockPath = path.join(memoryDir, '.lock');
+  fs.writeFileSync(lockPath, '999999', { flag: 'w' }); // simulate a crashed holder's lock
+  const staleTime = Date.now() / 1000 - 60; // 60s old, well past the 10s staleness threshold
+  fs.utimesSync(lockPath, staleTime, staleTime);
+
+  const result = await executeWriteMemory({ topic: 'Stale Lock Test', content: 'x', summary: 'x' });
+  assert.ok(result.includes('Stale Lock Test'), 'write completed — stale lock was stolen, not blocked on');
+});
+
+await test('atomic write: no leftover temp file after a successful write', async () => {
+  await executeWriteMemory({ topic: 'Atomic Check', content: 'x', summary: 'x' });
+  const memoryDir = getMemoryDir();
+  const leftovers = fs.readdirSync(memoryDir).filter(f => f.includes('.tmp-'));
+  assert.equal(leftovers.length, 0, 'no .tmp- files remain');
 });
 
 // ═══════════════════════════════════════════════════════════
