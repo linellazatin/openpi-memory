@@ -593,6 +593,21 @@ await test('writeHandoff: handoff_keep=0 is a no-op', async () => {
   assert.ok(!fs.existsSync(HANDOFF_FILE), 'file not created when keep=0');
 });
 
+await test('readHandoff: migrates legacy HANDOFF.md forward before reading, not just writeHandoff', async () => {
+  if (fs.existsSync(HANDOFF_FILE)) fs.unlinkSync(HANDOFF_FILE);
+  const legacyHandoffPath = path.join(TMP, 'memory', 'HANDOFF.md');
+  fs.mkdirSync(path.dirname(legacyHandoffPath), { recursive: true });
+  fs.writeFileSync(legacyHandoffPath, '## 2026-01-01T00:00:00+00:00 (manual)\n\n- Legacy handoff content\n', 'utf8');
+
+  // readHandoff, not writeHandoff, is called first — this is exactly the pre-first-compaction
+  // scenario where only the read path was previously exercised, and the old code had no
+  // migration there at all (only writeHandoff did).
+  const entry = readHandoff();
+  assert.ok(entry.includes('Legacy handoff content'), 'legacy content surfaced on first read, before any writeHandoff call');
+  assert.ok(fs.existsSync(HANDOFF_FILE), 'new-path HANDOFF.md created by the migration');
+  assert.ok(fs.existsSync(legacyHandoffPath), 'legacy file still exists — never deleted');
+});
+
 await test('writeHandoff: skips non-assistant messages and empty blocks', async () => {
   if (fs.existsSync(HANDOFF_FILE)) fs.unlinkSync(HANDOFF_FILE);
   const mixed = [
