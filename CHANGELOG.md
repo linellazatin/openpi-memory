@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.2] - 2026-08-19
+
+### Fixed
+- `compaction_end` was never delivered by the pi runtime (verified against installed `@earendil-works/pi-coding-agent`) — `auto_resume_after_threshold_compaction`, `consolidate_on_compact`, and handoff-aware auto-resume were silently inert. Moved the logic to `session_compact`, which is actually wired to extensions
+- JSONC comment-stripping regex broke on `//` inside string values (e.g. a URL) — silently reset the whole config to defaults. Now string-literal-aware
+- `maintainIndex` only ran on `write_memory`, not `remove_memory`/`pin_memory` as `docs/configuration.md` claimed — now runs on all three
+- `readHandoff()` lacked the legacy-path migration `writeHandoff()` had — a pre-upgrade `HANDOFF.md` could be missed on first read after upgrading
+- Path traversal via unsanitized filenames parsed from `MEMORY.md` — filenames containing `/`, `\`, or `..` are now rejected at parse time
+- `write_memory`'s prompt guideline referenced a non-existent `overwrite: true` param — corrected to `mode: "replace"`
+- Two bugs caught by the new type-checking below: a missing `description` theme function in the `/memory remove` confirmation dialog; `executeWriteMemory`'s `overwrite` param missing a default
+
+### Added
+- `tsconfig.json` + `npm run typecheck`, wired into CI — `extensions/index.ts` was never statically checked before
+- CI now runs `npm test`/`typecheck` on every push/PR and before publish — previously never ran in CI at all
+- Documented the unlocked `shared_dir` carry-over race as a known, scoped limitation (`docs/faq.md`, `docs/shared-directory.md`)
+
 ## [0.3.1] - 2026-08-19 HOTFIX++
 
 ### Changed

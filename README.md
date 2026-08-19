@@ -10,6 +10,12 @@ A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory)
 > Considering that vast majority of people who use **pi** literally creates their own extensions, I'm shooting my shot on this memory extension that I believe is good enough to be your *ultra-simplest* memory handler.
 
 >
+> ## v0.3.2 - bug fixes + hardening
+> - fixed `compaction_end` never firing on the pi runtime — `auto_resume_after_threshold_compaction`, `consolidate_on_compact`, and handoff-aware resume were silently dead; moved the logic to `session_compact` which actually works
+> - fixed a JSONC config bug where `//` inside a value (e.g. a URL) silently reset your whole config to defaults
+> - added static type-checking (`tsc`) + CI now actually runs tests/typecheck on every push and before publish (none of this ran in CI before)
+> - smaller fixes: path traversal guard on `MEMORY.md` filenames, `remove`/`pin` now also run index maintenance, stale `overwrite` prompt wording corrected
+>
 > ## v0.3.1 HOTFIX on shared_dir
 > - **`shared_dir` carry-over now merges** instead of skipping when the shared dir already has content from another memory system of ours (e.g. openpi-memory wrote first) — collisions resolved by content comparison, differing files get a `-opim` suffix
 >

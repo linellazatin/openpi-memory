@@ -10,7 +10,7 @@ The first time `shared_dir` resolves to `true`, the extension performs a one-tim
 
 This merge runs at most once, ever — not once per process. Completion is marked by an empty sentinel file, `~/.pi/agent/memory/.shared-dir-migrated`, written only after a successful merge. Every process start after that checks for the sentinel first: if present, the whole merge (index read, directory listing, per-entry content comparisons) is skipped entirely — a single `fs.existsSync` call instead of reading every local and shared file. Toggling `shared_dir` off and back on later does not repeat the merge, sentinel or not.
 
-Cross-process writes to the shared directory are protected by a real filesystem lock (not just an in-process mutex), and index/topic-file writes are atomic (write-to-temp then rename), so a pi session and another tool's session can safely write to the same shared directory without corrupting it.
+Cross-process writes to the shared directory are protected by a real filesystem lock (not just an in-process mutex), and index/topic-file writes are atomic (write-to-temp then rename), so a pi session and another tool's session can safely write to the same shared directory without corrupting it. **The one-time merge carry-over itself is the one exception — it does not acquire this lock.** See [FAQ: Is the one-time shared_dir carry-over itself protected by that same lock?](faq.md) for the narrow race window this leaves and why it's an accepted, scoped tradeoff rather than an oversight.
 
 ## First run: fresh install
 
