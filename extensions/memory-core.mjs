@@ -39,8 +39,6 @@ const LEGACY_MEMORY_RULES_BACKUP = path.join(LEGACY_MEMORY_DIR, 'RULES.jsonc.bak
 // HANDOFF.md is a pi-only compaction artifact — always local, sibling of memory.jsonc.
 export const HANDOFF_FILE = path.join(AGENT_DIR, 'HANDOFF.md');
 
-// One-time local carry-over backup (see maybeCarryOverLocalMemory below).
-const LOCAL_CARRYOVER_BACKUP_DIR = path.join(AGENT_DIR, 'memory-backup-before-shared-dir');
 
 // --- Constants ---
 
@@ -53,6 +51,8 @@ export const DEFAULT_AUTO_RESUME_AFTER_THRESHOLD = false;
 export const DEFAULT_CONSOLIDATE_ON_COMPACT = false;
 export const DEFAULT_SHARED_DIR = false;
 const LOCK_STALE_MS = 10 * 1000;
+let _carryOverChecked = false; // guard: run carry-over at most once per process
+const CARRY_OVER_SENTINEL = path.join(LEGACY_MEMORY_DIR, '.shared-dir-migrated');
 
 // Single source of truth for parseRules()' fallback values — used both when a field is
 // missing/invalid in memory.jsonc and when the whole file fails to read/parse.
@@ -149,41 +149,91 @@ export const INITIAL_RULES_JSONC = `{
 // --- Directory resolution ---
 
 /**
- * One-time, non-destructive local carry-over: when shared_dir first resolves true and the
- * shared directory has no index yet, copy (never move) existing index + topic files from the
- * legacy per-tool directory into the shared one. A full backup of the legacy files is written
- * first. The legacy directory and its files are never modified or deleted. Files already present
- * at the destination are never overwritten. Runs at most once — guarded by shared MEMORY.md absence.
+ * One-time merge carry-over: when shared_dir first resolves true, merge local index + topic
+ * files into the shared directory. If the shared dir already has content (written by another
+ * tool), missing entries are appended and missing topic files are copied — never overwriting
+ * what's already there. Filename collisions with differing content are resolved by a -opim
+ * suffix. Runs at most once per process, gated by _carryOverChecked.
  */
 function maybeCarryOverLocalMemory() {
-  const sharedIndex = path.join(SHARED_MEMORY_DIR, 'MEMORY.md');
-  const legacyIndex = path.join(LEGACY_MEMORY_DIR, 'MEMORY.md');
-  if (fs.existsSync(sharedIndex)) return; // already migrated
-  if (!fs.existsSync(legacyIndex)) return; // nothing to carry over
+  if (_carryOverChecked) return;
+  _carryOverChecked = true;
+  if (fs.existsSync(CARRY_OVER_SENTINEL)) return; // already merged in a prior process run
+  if (!fs.existsSync(path.join(LEGACY_MEMORY_DIR, 'MEMORY.md'))) return; // nothing local to carry over
+  try {
+    fs.mkdirSync(SHARED_MEMORY_DIR, { recursive: true });
+    // ponytail: no lock here — carry-over is one-time (_carryOverChecked gates it) and
+    // additive-only; any race-condition duplicates are cleaned by maintainIndex on next write.
+    mergeLocalIntoSharedDir(SHARED_MEMORY_DIR);
+    fs.writeFileSync(CARRY_OVER_SENTINEL, ''); // mark complete so future process starts skip the full pass
+  } catch {
+    // best-effort — carry-over failure must never break normal operation
+  }
+}
 
-  const carryable = fs.readdirSync(LEGACY_MEMORY_DIR)
-    .filter(f => f.endsWith('.md') && f !== 'HANDOFF.md'); // MEMORY.md + topic files; HANDOFF.md stays local always
+// Merge local MEMORY.md entries and topic files into sharedDir.
+// Appends only entries whose topic file is absent in the shared dir (by content or name).
+// Never modifies or deletes anything already present in sharedDir.
+function mergeLocalIntoSharedDir(sharedDir) {
+  const sharedIndexPath = path.join(sharedDir, 'MEMORY.md');
+  const sharedRaw = fs.existsSync(sharedIndexPath)
+    ? fs.readFileSync(sharedIndexPath, 'utf8')
+    : INITIAL_MEMORY;
+  const sharedFilesOnDisk = new Set(fs.readdirSync(sharedDir));
 
-  // 1. Backup first — the legacy dir and its files are never touched destructively, so this
-  //    backup is not strictly needed to prevent data loss from the copy below. It's a deliberate
-  //    safety net against a future code change to this function (e.g. a copy that becomes a
-  //    move) — kept intentionally, not an oversight.
-  fs.mkdirSync(LOCAL_CARRYOVER_BACKUP_DIR, { recursive: true });
-  for (const file of carryable) {
-    const backupDest = path.join(LOCAL_CARRYOVER_BACKUP_DIR, file);
-    if (!fs.existsSync(backupDest)) {
-      fs.copyFileSync(path.join(LEGACY_MEMORY_DIR, file), backupDest);
-    }
+  const localLines = fs.readFileSync(path.join(LEGACY_MEMORY_DIR, 'MEMORY.md'), 'utf8').split('\n');
+  const toAppend = [];
+
+  for (const line of localLines) {
+    const parsed = parseIndexLine(line);
+    if (!parsed) continue; // headers/blanks — destination keeps its own structure
+    const srcPath = path.join(LEGACY_MEMORY_DIR, parsed.filename);
+    if (!fs.existsSync(srcPath)) continue; // orphaned local entry — skip
+
+    const destName = resolveDestName(srcPath, sharedDir, parsed.filename, sharedFilesOnDisk);
+    if (destName === null) continue; // identical content already present — no-op
+
+    atomicWriteFileSync(path.join(sharedDir, destName), fs.readFileSync(srcPath, 'utf8'));
+    sharedFilesOnDisk.add(destName);
+    toAppend.push(line.replace(`](${parsed.filename})`, `](${destName})`));
   }
 
-  // 2. Copy (never move) into the shared dir. Never overwrite an existing destination file.
-  fs.mkdirSync(SHARED_MEMORY_DIR, { recursive: true });
-  for (const file of carryable) {
-    const dest = path.join(SHARED_MEMORY_DIR, file);
-    if (!fs.existsSync(dest)) {
-      fs.copyFileSync(path.join(LEGACY_MEMORY_DIR, file), dest);
-    }
+  if (toAppend.length) {
+    const merged = sharedRaw.trimEnd() + '\n' + toAppend.join('\n') + '\n';
+    atomicWriteFileSync(sharedIndexPath, merged);
+  } else if (!fs.existsSync(sharedIndexPath)) {
+    atomicWriteFileSync(sharedIndexPath, sharedRaw); // shared dir is empty and local had no valid entries
   }
+}
+
+// Decide where a local topic file lands in sharedDir.
+// Returns the destination filename, or null if the content is already present (no-op).
+function resolveDestName(srcPath, sharedDir, filename, sharedFilesOnDisk) {
+  const originalDest = path.join(sharedDir, filename);
+  if (!fs.existsSync(originalDest)) return filename; // no collision
+
+  if (filesEqual(srcPath, originalDest)) return null; // already there, identical
+
+  const suffixed = filename.replace(/\.md$/, '-opim.md');
+  const suffixedDest = path.join(sharedDir, suffixed);
+  if (!fs.existsSync(suffixedDest)) return suffixed;
+  if (filesEqual(srcPath, suffixedDest)) return null; // already migrated in a prior run
+
+  // Exceedingly rare: both slots taken by different content — bump a counter.
+  let n = 2, candidate;
+  do { candidate = filename.replace(/\.md$/, `-opim-${n}.md`); n++; }
+  while (sharedFilesOnDisk.has(candidate));
+  return candidate;
+}
+
+function filesEqual(pathA, pathB) {
+  return fs.readFileSync(pathA, 'utf8') === fs.readFileSync(pathB, 'utf8');
+}
+
+// Test-only: reset the carry-over guard to simulate a fresh process start.
+export function _resetCarryOver() {
+  _carryOverChecked = false;
+  try { fs.unlinkSync(CARRY_OVER_SENTINEL); } catch { /* not present is fine */ }
 }
 
 /**

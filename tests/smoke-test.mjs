@@ -56,6 +56,7 @@ const {
   readHandoff,
   searchMemory,
   detectIncompleteTask,
+  _resetCarryOver,
 } = await import('../extensions/memory-core.mjs');
 
 // ── Test runner ───────────────────────────────────────────────────────────
@@ -828,40 +829,163 @@ await test('getMemoryDir resolves to legacy dir when shared_dir=false', async ()
   assert.equal(getMemoryDir(), LEGACY_DIR_PATH, 'resolves to legacy dir');
 });
 
-await test('local carry-over: enabling shared_dir backs up and copies, never deletes legacy files', async () => {
+await test('local carry-over: enabling shared_dir merges into shared, never deletes legacy files', async () => {
+  fs.rmSync(SHARED_DIR_PATH, { recursive: true, force: true });
+  _resetCarryOver();
   await executeWriteMemory({ topic: 'Carryover Fixture', content: 'carry me over', summary: 'fixture' });
-  const legacyFiles = fs.readdirSync(LEGACY_DIR_PATH).filter(f => f.endsWith('.md') && f !== 'HANDOFF.md');
-  const legacyContentsBefore = new Map(legacyFiles.map(f => [f, fs.readFileSync(path.join(LEGACY_DIR_PATH, f), 'utf8')]));
-  assert.ok(fs.existsSync(HANDOFF_FILE), 'sanity: HANDOFF.md exists from an earlier test, to exercise the exclusion');
+  // Use index entries (not raw dir listing) — mergeLocalIntoSharedDir only copies indexed+present files
+  const localIndexRaw = fs.readFileSync(path.join(LEGACY_DIR_PATH, 'MEMORY.md'), 'utf8');
+  const localEntries = localIndexRaw.split('\n').map(parseIndexLine).filter(Boolean)
+    .filter(e => fs.existsSync(path.join(LEGACY_DIR_PATH, e.filename)));
+  const contentsBefore = new Map(localEntries.map(e => [e.filename, fs.readFileSync(path.join(LEGACY_DIR_PATH, e.filename), 'utf8')]));
 
   writeRules('{ "shared_dir": true }');
-  const resolved = getMemoryDir(); // triggers maybeCarryOverLocalMemory as a side effect
+  const resolved = getMemoryDir();
   assert.equal(resolved, SHARED_DIR_PATH, 'resolves to shared dir once enabled');
-
-  const backupDir = path.join(TMP, 'memory-backup-before-shared-dir');
-  assert.ok(!fs.existsSync(path.join(backupDir, 'HANDOFF.md')), 'HANDOFF.md is not backed up — stays local always');
   assert.ok(!fs.existsSync(path.join(SHARED_DIR_PATH, 'HANDOFF.md')), 'HANDOFF.md is not copied to the shared dir');
-  for (const f of legacyFiles) {
-    assert.ok(fs.existsSync(path.join(backupDir, f)), `backup contains ${f}`);
-    assert.ok(fs.existsSync(path.join(SHARED_DIR_PATH, f)), `shared dir contains ${f}`);
-    assert.equal(
-      fs.readFileSync(path.join(SHARED_DIR_PATH, f), 'utf8'),
-      legacyContentsBefore.get(f),
-      `${f} copied byte-for-byte`
-    );
-  }
-  for (const f of legacyFiles) {
-    assert.ok(fs.existsSync(path.join(LEGACY_DIR_PATH, f)), `legacy ${f} still exists`);
-    assert.equal(fs.readFileSync(path.join(LEGACY_DIR_PATH, f), 'utf8'), legacyContentsBefore.get(f), `legacy ${f} unchanged`);
+
+  const sharedIndexRaw = fs.readFileSync(path.join(SHARED_DIR_PATH, 'MEMORY.md'), 'utf8');
+  for (const e of localEntries) {
+    assert.ok(fs.existsSync(path.join(SHARED_DIR_PATH, e.filename)), `shared dir contains ${e.filename}`);
+    assert.equal(fs.readFileSync(path.join(SHARED_DIR_PATH, e.filename), 'utf8'), contentsBefore.get(e.filename), `${e.filename} copied byte-for-byte`);
+    assert.ok(sharedIndexRaw.includes(e.filename), `shared MEMORY.md has entry for ${e.filename}`);
+    assert.ok(fs.existsSync(path.join(LEGACY_DIR_PATH, e.filename)), `legacy ${e.filename} still exists`);
+    assert.equal(fs.readFileSync(path.join(LEGACY_DIR_PATH, e.filename), 'utf8'), contentsBefore.get(e.filename), `legacy ${e.filename} unchanged`);
   }
 });
 
+await test('cross-tool merge: no-collision — foreign shared content and local content coexist', async () => {
+  fs.rmSync(SHARED_DIR_PATH, { recursive: true, force: true });
+  _resetCarryOver();
+  // Pre-seed shared dir as if another tool (e.g. openclaude-memory) already wrote there
+  fs.mkdirSync(SHARED_DIR_PATH, { recursive: true });
+  fs.writeFileSync(path.join(SHARED_DIR_PATH, 'MEMORY.md'),
+    '# Memory Index\n\n- [Foreign Topic](foreign-topic.md) 2026-01-01 -- from another tool\n', 'utf8');
+  fs.writeFileSync(path.join(SHARED_DIR_PATH, 'foreign-topic.md'), 'foreign content', 'utf8');
+
+  writeRules('{ "shared_dir": true }');
+  getMemoryDir(); // triggers merge
+
+  const sharedIndex = fs.readFileSync(path.join(SHARED_DIR_PATH, 'MEMORY.md'), 'utf8');
+  assert.ok(sharedIndex.includes('foreign-topic.md'), 'pre-existing foreign entry preserved');
+  // Only check files that are indexed in local MEMORY.md and present on disk
+  const localIndexRaw2 = fs.readFileSync(path.join(LEGACY_DIR_PATH, 'MEMORY.md'), 'utf8');
+  const localEntries2 = localIndexRaw2.split('\n').map(parseIndexLine).filter(Boolean)
+    .filter(e => fs.existsSync(path.join(LEGACY_DIR_PATH, e.filename)));
+  for (const e of localEntries2) {
+    assert.ok(fs.existsSync(path.join(SHARED_DIR_PATH, e.filename)), `local topic ${e.filename} merged into shared`);
+    assert.ok(sharedIndex.includes(e.filename), `shared index contains entry for ${e.filename}`);
+  }
+  assert.ok(fs.existsSync(path.join(SHARED_DIR_PATH, 'foreign-topic.md')), 'foreign topic file untouched');
+  assert.equal(fs.readFileSync(path.join(SHARED_DIR_PATH, 'foreign-topic.md'), 'utf8'), 'foreign content', 'foreign content byte-identical');
+});
+
+await test('cross-tool merge: identical-content collision is a no-op (no -opim file created)', async () => {
+  fs.rmSync(SHARED_DIR_PATH, { recursive: true, force: true });
+  _resetCarryOver();
+  // Use the first entry from the local index as our collision candidate
+  const localIndexRaw3 = fs.readFileSync(path.join(LEGACY_DIR_PATH, 'MEMORY.md'), 'utf8');
+  const localEntries3 = localIndexRaw3.split('\n').map(parseIndexLine).filter(Boolean)
+    .filter(e => fs.existsSync(path.join(LEGACY_DIR_PATH, e.filename)));
+  const candidate = localEntries3[0];
+  const identicalContent = fs.readFileSync(path.join(LEGACY_DIR_PATH, candidate.filename), 'utf8');
+  fs.mkdirSync(SHARED_DIR_PATH, { recursive: true });
+  // Pre-seed shared dir with the file AND an index entry — simulates another tool already having this content
+  fs.writeFileSync(path.join(SHARED_DIR_PATH, 'MEMORY.md'),
+    `# Memory Index\n\n- [${candidate.name}](${candidate.filename}) 2026-01-01 -- already here\n`, 'utf8');
+  fs.writeFileSync(path.join(SHARED_DIR_PATH, candidate.filename), identicalContent, 'utf8');
+
+  writeRules('{ "shared_dir": true }');
+  getMemoryDir();
+
+  const suffixed = candidate.filename.replace(/\.md$/, '-opim.md');
+  assert.ok(!fs.existsSync(path.join(SHARED_DIR_PATH, suffixed)), 'no -opim file when content is identical');
+  const sharedIndex = fs.readFileSync(path.join(SHARED_DIR_PATH, 'MEMORY.md'), 'utf8');
+  assert.equal((sharedIndex.match(new RegExp(candidate.filename.replace('.', '\\.'), 'g')) || []).length, 1,
+    'exactly one index entry for the file — no duplicate from the no-op');
+});
+
+await test('cross-tool merge: differing-content collision renames local file with -opim suffix', async () => {
+  fs.rmSync(SHARED_DIR_PATH, { recursive: true, force: true });
+  _resetCarryOver();
+  const localTopics = fs.readdirSync(LEGACY_DIR_PATH).filter(f => f.endsWith('.md') && f !== 'MEMORY.md' && f !== 'HANDOFF.md');
+  const localFilename = localTopics[0];
+  const localContent = fs.readFileSync(path.join(LEGACY_DIR_PATH, localFilename), 'utf8');
+  const foreignContent = 'completely different content from another tool';
+  fs.mkdirSync(SHARED_DIR_PATH, { recursive: true });
+  fs.writeFileSync(path.join(SHARED_DIR_PATH, 'MEMORY.md'),
+    `# Memory Index\n\n- [Foreign Same Name](${localFilename}) 2026-01-01 -- foreign\n`, 'utf8');
+  fs.writeFileSync(path.join(SHARED_DIR_PATH, localFilename), foreignContent, 'utf8'); // same name, different content
+
+  writeRules('{ "shared_dir": true }');
+  getMemoryDir();
+
+  const suffixed = localFilename.replace(/\.md$/, '-opim.md');
+  assert.ok(fs.existsSync(path.join(SHARED_DIR_PATH, suffixed)), 'local content copied as -opim file');
+  assert.equal(fs.readFileSync(path.join(SHARED_DIR_PATH, suffixed), 'utf8'), localContent, '-opim file has local content');
+  assert.equal(fs.readFileSync(path.join(SHARED_DIR_PATH, localFilename), 'utf8'), foreignContent, 'original foreign file untouched');
+  const sharedIndex = fs.readFileSync(path.join(SHARED_DIR_PATH, 'MEMORY.md'), 'utf8');
+  assert.ok(sharedIndex.includes(suffixed), 'shared index entry points to -opim filename');
+  assert.ok(sharedIndex.includes(localFilename), 'original foreign entry still in index');
+});
+
+await test('cross-tool merge: idempotent on repeat — no -opim-2 or duplicate entries on second run', async () => {
+  // Reuse shared dir state from previous test (has both localFilename and -opim file)
+  _resetCarryOver();
+  const localTopics = fs.readdirSync(LEGACY_DIR_PATH).filter(f => f.endsWith('.md') && f !== 'MEMORY.md' && f !== 'HANDOFF.md');
+  const suffixed = localTopics[0].replace(/\.md$/, '-opim.md');
+  const indexBefore = fs.readFileSync(path.join(SHARED_DIR_PATH, 'MEMORY.md'), 'utf8');
+  const filesBefore = fs.readdirSync(SHARED_DIR_PATH);
+
+  writeRules('{ "shared_dir": true }');
+  getMemoryDir(); // second run
+
+  const indexAfter = fs.readFileSync(path.join(SHARED_DIR_PATH, 'MEMORY.md'), 'utf8');
+  const filesAfter = fs.readdirSync(SHARED_DIR_PATH);
+  const bump = localTopics[0].replace(/\.md$/, '-opim-2.md');
+  assert.ok(!fs.existsSync(path.join(SHARED_DIR_PATH, bump)), 'no -opim-2 file on repeat run');
+  assert.equal(filesAfter.length, filesBefore.length, 'no new files created on repeat run');
+  assert.equal((indexAfter.match(new RegExp(suffixed.replace('.', '\\.'), 'g')) || []).length,
+    (indexBefore.match(new RegExp(suffixed.replace('.', '\\.'), 'g')) || []).length,
+    '-opim entry count unchanged on repeat');
+});
+
+await test('cross-tool merge: orphaned local index entry (no backing file) is skipped', async () => {
+  fs.rmSync(SHARED_DIR_PATH, { recursive: true, force: true });
+  _resetCarryOver();
+  // Plant a MEMORY.md entry that points to a missing topic file
+  const orphanFilename = 'orphan-topic.md';
+  const realLocalIndex = fs.readFileSync(path.join(LEGACY_DIR_PATH, 'MEMORY.md'), 'utf8');
+  fs.writeFileSync(path.join(LEGACY_DIR_PATH, 'MEMORY.md'),
+    realLocalIndex.trimEnd() + `\n- [Orphan](${orphanFilename}) 2026-01-01 -- orphan\n`, 'utf8');
+  // Do NOT create orphan-topic.md
+
+  fs.mkdirSync(SHARED_DIR_PATH, { recursive: true });
+  fs.writeFileSync(path.join(SHARED_DIR_PATH, 'MEMORY.md'), '# Memory Index\n\n', 'utf8');
+  writeRules('{ "shared_dir": true }');
+  getMemoryDir();
+
+  assert.ok(!fs.existsSync(path.join(SHARED_DIR_PATH, orphanFilename)), 'orphaned topic file not created in shared dir');
+  const sharedIndex = fs.readFileSync(path.join(SHARED_DIR_PATH, 'MEMORY.md'), 'utf8');
+  assert.ok(!sharedIndex.includes(orphanFilename), 'orphaned entry not in shared index');
+  // Restore clean local index for subsequent tests
+  fs.writeFileSync(path.join(LEGACY_DIR_PATH, 'MEMORY.md'), realLocalIndex, 'utf8');
+});
+
 await test('local carry-over runs only once: new legacy-only entries are not retroactively copied', async () => {
+  fs.rmSync(SHARED_DIR_PATH, { recursive: true, force: true });
+  _resetCarryOver();
+  // First carry-over fires here
+  writeRules('{ "shared_dir": true }');
+  getMemoryDir();
+  // Now write new entries to legacy (shared_dir off) — these must NOT appear in shared after re-enabling
   writeRules('{ "shared_dir": false }');
   await executeWriteMemory({ topic: 'Legacy Only Entry', content: 'stays in legacy', summary: 'legacy-only' });
+  await executeWriteMemory({ topic: 'Legacy Only Entry 2', content: 'also stays', summary: 'legacy-only-2' });
   writeRules('{ "shared_dir": true }');
   getMemoryDir(); // would re-trigger carry-over if the guard were broken
-  assert.ok(!fs.existsSync(path.join(SHARED_DIR_PATH, 'legacy-only-entry.md')), 'not copied — carry-over already completed once');
+  assert.ok(!fs.existsSync(path.join(SHARED_DIR_PATH, 'legacy-only-entry.md')), 'not copied — carry-over already ran once');
+  assert.ok(!fs.existsSync(path.join(SHARED_DIR_PATH, 'legacy-only-entry-2.md')), 'not copied — carry-over already ran once');
 });
 
 await test('lock: concurrent writes are serialized without corrupting the index', async () => {
