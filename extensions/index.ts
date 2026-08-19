@@ -13,7 +13,9 @@
  *   session_start          — bootstrap memory dir + files; reset injection state
  *   before_agent_start    — inject memory + rules into system prompt (once per user prompt)
  *   session_before_compact — reset injection state so next prompt always re-injects
- *   compaction_end         — auto-resume nudge after threshold compaction
+ *   session_compact        — capture compaction summary + auto-resume nudge after threshold compaction
+ *                            (compaction_end is not delivered to extensions by the pi runtime —
+ *                            see the comment on the session_compact handler for details)
  *
  * Tools registered: write_memory, remove_memory, pin_memory
  * Command registered: /memory
@@ -143,17 +145,19 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ── session_compact ──────────────────────────────────────────────────────
-  // Capture compaction summary so compaction_end can use it directly instead
-  // of asking the agent to re-scan the full conversation history.
+  // Capture compaction summary, and run auto-resume logic here instead of on
+  // 'compaction_end' — the pi runtime never delivers 'compaction_end' to extensions
+  // (verified against @earendil-works/pi-coding-agent: every this._emit({ type:
+  // "compaction_end", ... }) call in agent-session.js targets the UI-only
+  // _eventListeners array, never this._extensionRunner.emit(...), which is the
+  // only path pi.on(...) handlers are invoked through). 'session_compact' fires
+  // through the extension runner and carries the same reason/willRetry/compactionEntry
+  // fields compaction_end would have, so the auto-resume branching logic below is
+  // unchanged from the old compaction_end handler — only the event name moved.
 
   pi.on('session_compact', (event) => {
     _lastCompactionSummary = event.compactionEntry.summary;
-  });
 
-  // ── compaction_end ───────────────────────────────────────────────────────
-  // Auto-resume after threshold compaction: opt-in nudge + handoff-aware detection
-
-  pi.on('compaction_end', async (event) => {
     if (event.reason !== 'threshold' || event.willRetry) return;
 
     const rules = parseRules();
@@ -194,7 +198,7 @@ export default function (pi: ExtensionAPI) {
     promptGuidelines: [
       'Use write_memory to persist anything worth remembering across sessions: bugs fixed, explicitly stated user preferences, configs discovered, commands identified, environment facts learned.',
       'Check ## Memory Rules in your context for what to persist and what to skip. When in doubt, persist.',
-      'Set overwrite: true when replacing known state (hardware specs, config, user preferences). Use default append for new facts, fixes, and discoveries.',
+      'Set mode: "replace" when replacing known state (hardware specs, config, user preferences). Use default append for new facts, fixes, and discoveries.',
     ],
     parameters: Type.Object({
       topic:    Type.String({ description: 'Topic name, e.g. "PostgreSQL Setup" or "Homelab Server"' }),
@@ -263,6 +267,7 @@ export default function (pi: ExtensionAPI) {
             const list = new SelectList(items, items.length, {
               selectedPrefix: (t) => theme.fg('accent', t),
               selectedText:   (t) => theme.fg('accent', t),
+              description:    (t) => theme.fg('muted', t),
               scrollInfo:     (t) => theme.fg('dim', t),
               noMatch:        (t) => theme.fg('warning', t),
             });

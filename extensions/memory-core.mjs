@@ -269,12 +269,69 @@ function atomicWriteFileSync(filePath, content) {
 
 // --- Config (memory.jsonc) ---
 
+// Strip `//` line comments and trailing commas from JSONC, without misinterpreting
+// `//` or `,]`/`,}` sequences that appear inside string literals (e.g. a rule value
+// containing a URL like "https://example.com" would otherwise be truncated mid-string,
+// producing invalid JSON and silently resetting the whole config to defaults).
+function stripJsonc(raw) {
+  return stripTrailingCommas(stripLineComments(raw));
+}
+
+function stripLineComments(raw) {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (inString) {
+      out += c;
+      if (escaped) escaped = false;
+      else if (c === '\\') escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') { inString = true; out += c; continue; }
+    if (c === '/' && raw[i + 1] === '/') {
+      while (i < raw.length && raw[i] !== '\n') i++;
+      out += '\n';
+      continue;
+    }
+    out += c;
+  }
+  return out;
+}
+
+function stripTrailingCommas(json) {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < json.length; i++) {
+    const c = json[i];
+    if (inString) {
+      out += c;
+      if (escaped) escaped = false;
+      else if (c === '\\') escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') { inString = true; out += c; continue; }
+    if (c === ',') {
+      let j = i + 1;
+      while (j < json.length && /\s/.test(json[j])) j++;
+      if (json[j] === '}' || json[j] === ']') continue; // drop trailing comma
+    }
+    out += c;
+  }
+  return out;
+}
+
 /**
  * Read and parse memory.jsonc. Creates the file with defaults if missing.
  * If the legacy RULES.jsonc (under the old memory/ dir) exists but memory.jsonc does not,
  * back it up (RULES.jsonc.bak) and copy its content forward — the legacy file is never
  * deleted or moved.
- * Strips // line comments and trailing commas before JSON.parse.
+ * Strips // line comments and trailing commas before JSON.parse, string-literal-aware
+ * (so a rule value containing "//" inside quotes, e.g. a URL, is left untouched).
  * Clamps all scalar values to valid ranges.
  */
 export function parseRules() {
@@ -294,9 +351,7 @@ export function parseRules() {
       }
     }
     const raw = fs.readFileSync(MEMORY_RULES, 'utf8');
-    const stripped = raw
-      .replace(/\/\/[^\n]*/g, '')
-      .replace(/,\s*([}\]])/g, '$1');
+    const stripped = stripJsonc(raw);
     const obj = JSON.parse(stripped);
 
     return {
@@ -403,11 +458,18 @@ export function readMemoryIndex(maxLines) {
 export function parseIndexLine(line) {
   const match = line.match(/^(\s*-\s+\[)([^\]]+)(\]\()([^)]+)(\))(.*)/);
   if (!match) return null;
+  const filename = match[4];
+  // Reject path-traversal-capable filenames read back from MEMORY.md (the link target is
+  // otherwise unrestricted). Not reachable via normal write_memory calls (toSlug() cannot
+  // produce these characters) — this guards against a corrupted or maliciously co-written
+  // index file (a real, if narrow, risk once shared_dir puts another tool in the trust
+  // boundary) flowing into any path.join(memoryDir, filename) call downstream.
+  if (/[\\/]/.test(filename) || filename.includes('..')) return null;
   return {
     prefix:   match[1],
     name:     match[2],
     mid:      match[3] + match[4] + match[5],
-    filename: match[4],
+    filename,
     rest:     match[6],
   };
 }
@@ -647,7 +709,7 @@ async function withLock(fn) {
 // --- Tool execute functions ---
 // Called by both pi tools (index.ts) and /memory command handler directly.
 
-export async function executeWriteMemory({ topic, content, summary, pin = false, mode = 'append', overwrite }) {
+export async function executeWriteMemory({ topic, content, summary, pin = false, mode = 'append', overwrite = undefined }) {
   // backwards compat: overwrite: true maps to mode: 'replace'
   const replace = mode === 'replace' || overwrite === true;
   return withLock(() => {
@@ -705,7 +767,7 @@ export async function executeRemoveMemory({ topic }) {
     const memoryIndex = getMemoryIndex();
     if (!fs.existsSync(memoryIndex)) return 'No memory index found.';
 
-    const lines = fs.readFileSync(memoryIndex, 'utf8').split('\n');
+    let lines = fs.readFileSync(memoryIndex, 'utf8').split('\n');
     const found = findIndexEntry(lines, topic);
 
     if (!found) return `No entry found matching "${topic}".`;
@@ -714,6 +776,7 @@ export async function executeRemoveMemory({ topic }) {
       return `Cannot remove "${found.parsed.name}" — it is pinned. Unpin it first with: /memory unpin ${topic}`;
 
     lines.splice(found.idx, 1);
+    lines = maintainIndex(lines, parseRules());
     atomicWriteFileSync(memoryIndex, lines.join('\n'));
     return `Removed "${found.parsed.name}" from the index. Topic file is preserved on disk.`;
   });
@@ -724,7 +787,7 @@ export async function executePinMemory({ topic, pin }) {
     const memoryIndex = getMemoryIndex();
     if (!fs.existsSync(memoryIndex)) return 'No memory index found.';
 
-    const lines = fs.readFileSync(memoryIndex, 'utf8').split('\n');
+    let lines = fs.readFileSync(memoryIndex, 'utf8').split('\n');
     const found = findIndexEntry(lines, topic);
 
     if (!found) return `No entry found matching "${topic}".`;
@@ -743,8 +806,10 @@ export async function executePinMemory({ topic, pin }) {
       lines[idx] = lines[idx].replace(' [pin]', '');
     }
 
+    lines = maintainIndex(lines, parseRules());
+    const afterLine = lines.find(l => parseIndexLine(l)?.filename === parsed.filename) ?? lines[idx];
     atomicWriteFileSync(memoryIndex, lines.join('\n'));
-    return `${pin ? 'Pinned' : 'Unpinned'} "${parsed.name}".\nBefore: ${before}\n After: ${lines[idx]}`;
+    return `${pin ? 'Pinned' : 'Unpinned'} "${parsed.name}".\nBefore: ${before}\n After: ${afterLine}`;
   });
 }
 
@@ -793,12 +858,7 @@ export function writeHandoff(messages, reason, handoffKeep = DEFAULT_HANDOFF_KEE
 
   const entry = `## ${nowIso()} (${reason})\n\n${bullets.join('\n')}\n`;
 
-  // One-time migration: if new path doesn't exist but old path does, copy content forward.
-  // Old file stays on disk (never deleted), becomes inert.
-  const oldHandoffPath = path.join(LEGACY_MEMORY_DIR, 'HANDOFF.md');
-  if (!fs.existsSync(HANDOFF_FILE) && fs.existsSync(oldHandoffPath)) {
-    fs.copyFileSync(oldHandoffPath, HANDOFF_FILE);
-  }
+  migrateLegacyHandoff();
   const existing = fs.existsSync(HANDOFF_FILE) ? fs.readFileSync(HANDOFF_FILE, 'utf8') : '';
   const updated = existing + (existing.endsWith('\n') || !existing ? '' : '\n') + '\n' + entry;
 
@@ -808,11 +868,23 @@ export function writeHandoff(messages, reason, handoffKeep = DEFAULT_HANDOFF_KEE
   fs.writeFileSync(HANDOFF_FILE, pruned.trimStart() + '\n', 'utf8');
 }
 
+// One-time migration: if HANDOFF_FILE doesn't exist yet but the pre-relocation legacy path
+// does, copy content forward. Old file stays on disk (never deleted), becomes inert. Shared
+// by both writeHandoff and readHandoff so a user reading handoff content before the first
+// post-upgrade compaction fires still sees pre-existing legacy content, not an empty block.
+function migrateLegacyHandoff() {
+  const oldHandoffPath = path.join(LEGACY_MEMORY_DIR, 'HANDOFF.md');
+  if (!fs.existsSync(HANDOFF_FILE) && fs.existsSync(oldHandoffPath)) {
+    fs.copyFileSync(oldHandoffPath, HANDOFF_FILE);
+  }
+}
+
 /**
  * Read the most recent entry from HANDOFF.md for system prompt injection.
  * Returns empty string if the file doesn't exist or is empty.
  */
 export function readHandoff() {
+  migrateLegacyHandoff();
   if (!fs.existsSync(HANDOFF_FILE)) return '';
   const raw = fs.readFileSync(HANDOFF_FILE, 'utf8');
   const sections = raw.split(/(?=^## )/m).filter(s => s.trim());
