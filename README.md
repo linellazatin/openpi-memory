@@ -9,6 +9,10 @@ A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory)
 
 > Considering that vast majority of people who use **pi** literally creates their own extensions, I'm shooting my shot on this memory extension that I believe is good enough to be your *ultra-simplest* memory handler.
 
+>
+> ## v0.3.1 HOTFIX on shared_dir
+> - **`shared_dir` carry-over now merges** instead of skipping when the shared dir already has content from another memory system of ours (e.g. openpi-memory wrote first) — collisions resolved by content comparison, differing files get a `-opim` suffix
+>
 > ## v0.3.0 - MAJOR structural change
 > - `shared_dir` now a thing in the [config](docs/configuration.md#memoryjsonc) - you can opt-in on putting your memory entries (and index) to ~/.agents/memory and be SHARED between our "openlines" (lol) memory handlers for opencode ([openclaude-memory](https://github.com/linellazatin/openclaude-memory)) *(still on planning stages - to follow updates)* & pi coding agent ([openpi-memory](https://github.com/linellazatin/openpi-memory)); opting out (toggling to false) would just fallback to using our original ~/.pi/agent/memory for index and entries, but would still use the memory.jsonc config file starting this `0.3.0`.
 > - opting-in to `shared_dir` is somehow 'seamless' - see [FAQs](docs/faq.md).

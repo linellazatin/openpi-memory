@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.1] - 2026-08-19 HOTFIX++
+
+### Changed
+- `shared_dir` carry-over is now merge-aware: appends missing local entries into the shared `MEMORY.md` instead of skipping when the shared dir already has content (e.g. written by openclaude-memory); filename collisions with differing content are resolved with a `-opim` suffix; identical-content collisions are a no-op
+- `shared_dir` carry-over completion is now marked by a sentinel file (`~/.pi/agent/memory/.shared-dir-migrated`) instead of only an in-process flag — every process start after the first successful merge skips it in a single `fs.existsSync` check instead of re-reading and re-comparing every local and shared file on every pi session start
+
 ## [0.3.0] - 2026-08-16
 
 ### Added
@@ -14,8 +20,6 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - Config file renamed and relocated: `RULES.jsonc` (inside `memory/`) → `memory.jsonc` (one level up, sibling of `memory/`) — config now always stays per-tool regardless of `shared_dir`
 - `parseRules()` falls back to the legacy `RULES.jsonc` path when `memory.jsonc` doesn't exist yet: backs it up to `RULES.jsonc.bak`, then copies its content forward; the legacy file is never deleted or moved
-- `maintainIndex()` now accepts an optional `memoryDir` parameter (defaults to the resolved active directory) instead of referencing a fixed constant
-- `HANDOFF.md` relocated from `~/.pi/agent/memory/HANDOFF.md` to `~/.pi/agent/HANDOFF.md` (sibling of `memory.jsonc`) — compaction handoff is pi-specific and never affected by `shared_dir`; old file is never deleted, content is copied forward on first write after upgrade
 
 ## [0.2.0] - 2026-08-16
 

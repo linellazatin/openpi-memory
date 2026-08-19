@@ -6,7 +6,9 @@
 
 Set `"shared_dir": true` in `memory.jsonc` to move the index and topic files to `~/.agents/memory/` — a location intended to be shared with other tools that use the same on-disk format (e.g. [openclaude-memory](https://github.com/) for opencode). `memory.jsonc` itself and `HANDOFF.md` are never affected by this setting; they always stay in pi's own agent directory.
 
-The first time `shared_dir` resolves to `true`, if `~/.pi/agent/memory/` already has an index and `~/.agents/memory/` doesn't yet, the extension performs a one-time local carry-over: it backs up your existing index and topic files to `~/.pi/agent/memory-backup-before-shared-dir/`, then copies (never moves) them into the shared directory. Your original files in `~/.pi/agent/memory/` are never modified or deleted — the backup and the copy are both additive. This only runs once; toggling `shared_dir` off and back on later does not repeat it.
+The first time `shared_dir` resolves to `true`, the extension performs a one-time merge carry-over from `~/.pi/agent/memory/` into `~/.agents/memory/`. Unlike a simple copy, **the merge is safe even if another tool has already written to the shared directory**: local entries whose topic file is absent in the shared dir are appended to the shared `MEMORY.md` and their files are copied in. If a local filename collides with a pre-existing shared file of *different* content, the local file is copied under a `-opim` suffix (e.g. `docker-setup-opim.md`) and the shared index gains a corresponding entry. If the content is identical, it is a no-op — no duplicate file or entry is created. Files already present in the shared dir are never modified or deleted.
+
+This merge runs at most once, ever — not once per process. Completion is marked by an empty sentinel file, `~/.pi/agent/memory/.shared-dir-migrated`, written only after a successful merge. Every process start after that checks for the sentinel first: if present, the whole merge (index read, directory listing, per-entry content comparisons) is skipped entirely — a single `fs.existsSync` call instead of reading every local and shared file. Toggling `shared_dir` off and back on later does not repeat the merge, sentinel or not.
 
 Cross-process writes to the shared directory are protected by a real filesystem lock (not just an in-process mutex), and index/topic-file writes are atomic (write-to-temp then rename), so a pi session and another tool's session can safely write to the same shared directory without corrupting it.
 
@@ -63,23 +65,40 @@ Resulting state — two new files added, nothing removed:
 
 Net effect: the agent's first turn after upgrading behaves exactly as it did before. Your memory content, rules, and handoff behavior are all preserved as-is.
 
-**If you then opt into `shared_dir: true`** by editing `memory.jsonc`, the next `getMemoryDir()` call triggers a one-time carry-over: `MEMORY.md` and your topic files (never `HANDOFF.md`, which always stays local at `~/.pi/agent/HANDOFF.md`) are backed up to `~/.pi/agent/memory-backup-before-shared-dir/`, then copied — never moved — into `~/.agents/memory/`. Your original `~/.pi/agent/memory/` directory is left fully intact:
+**If you then opt into `shared_dir: true`** by editing `memory.jsonc`, the next `getMemoryDir()` call triggers a one-time merge carry-over: `MEMORY.md` entries and topic files are merged into `~/.agents/memory/` (never moved). A sentinel file is dropped into your original legacy dir to mark the merge complete; nothing else there is touched:
 
 ```
 ~/.pi/agent/
 ├── memory.jsonc
-├── memory-backup-before-shared-dir/      # NEW — one-time backup, no HANDOFF.md
-│   ├── MEMORY.md
-│   └── <topic>.md files...
 └── memory/                                # untouched, still fully intact
     ├── MEMORY.md
     ├── RULES.jsonc
     ├── RULES.jsonc.bak
+    ├── .shared-dir-migrated                # NEW — empty sentinel, marks merge done
     └── <topic>.md files...
 
 ~/.pi/agent/HANDOFF.md                      # stays local, never migrates
 
 ~/.agents/memory/                          # NEW — active storage now
-├── MEMORY.md
+├── MEMORY.md                              # merged from local
 └── <topic>.md files...
 ```
+
+## Opting in when another tool already populated the shared dir
+
+If you opt into `shared_dir` for openpi-memory *after* another tool (e.g. openclaude-memory for opencode) has already populated `~/.agents/memory/`, the merge carry-over handles it safely:
+
+- **No collision**: your local topic file doesn't exist in the shared dir yet — it is copied in and its entry is appended to the shared `MEMORY.md`.
+- **Identical-content collision**: the same file exists in the shared dir with byte-identical content — nothing is copied or appended (already there).
+- **Differing-content collision**: the same filename exists in the shared dir but with different content — your local file is copied as `<name>-opim.md` and that filename is used in the appended index entry. The existing shared file and its entry are untouched.
+
+Example: you have `docker-setup.md` locally; the shared dir already has a `docker-setup.md` from opencode with different content. After carry-over:
+
+```
+~/.agents/memory/
+├── MEMORY.md          # contains both the original entry AND a new entry for docker-setup-opim.md
+├── docker-setup.md    # opencode's original — untouched
+└── docker-setup-opim.md  # your pi content — merged in under the -opim suffix
+```
+
+The `-opim` suffix is stable and permanent: it's decided once, during the single merge run, and then locked in by the sentinel file. Restarting pi does **not** re-run the collision check — the sentinel at `~/.pi/agent/memory/.shared-dir-migrated` short-circuits the merge before it ever reaches `docker-setup-opim.md` again.
