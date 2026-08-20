@@ -11,10 +11,12 @@ A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory)
 
 >
 > ## v0.3.2 - bug fixes + hardening
-> - fixed `compaction_end` never firing on the pi runtime — `auto_resume_after_threshold_compaction`, `consolidate_on_compact`, and handoff-aware resume were silently dead; moved the logic to `session_compact` which actually works
+> - fixed `compaction_end` never firing on the pi runtime — `auto_resume_after_threshold_compaction`, `consolidate_on_compact`, and handoff-aware resume were silently dead; moved the logic to `session_compact` which actually works (and it's now unit-tested)
 > - fixed a JSONC config bug where `//` inside a value (e.g. a URL) silently reset your whole config to defaults
+> - broken config / unreadable index / failed shared-dir carry-over now log a `[openpi-memory]` line instead of failing silently
+> - `remove`/`pin` on an ambiguous topic now refuses and lists candidates instead of guessing; an exact name match always wins
 > - added static type-checking (`tsc`) + CI now actually runs tests/typecheck on every push and before publish (none of this ran in CI before)
-> - smaller fixes: path traversal guard on `MEMORY.md` filenames, `remove`/`pin` now also run index maintenance, stale `overwrite` prompt wording corrected
+> - smaller fixes: path traversal guard on `MEMORY.md` filenames, `remove`/`pin` now also run index maintenance, stale `overwrite` prompt wording corrected, empty-handoff now signalled
 >
 > ## v0.3.1 HOTFIX on shared_dir
 > - **`shared_dir` carry-over now merges** instead of skipping when the shared dir already has content from another memory system of ours (e.g. openpi-memory wrote first) — collisions resolved by content comparison, differing files get a `-opim` suffix
@@ -164,6 +166,8 @@ pi install git:github.com/linellazatin/openpi-memory
 ```
 
 The extension and skill load automatically after install. No further setup.
+
+**Requires pi coding agent `>=0.84.2`** (the version its extension hooks were verified against). This is declared as an advisory `peerDependency` — pi provides its own copy of the API at runtime, so npm won't hard-block an older install; if you're on an older pi and auto-resume/consolidation stop working, upgrade pi.
 
 ## Update
 
