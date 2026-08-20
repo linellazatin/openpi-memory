@@ -38,7 +38,7 @@ import {
   readHandoff,
   writeHandoff,
   searchMemory,
-  detectIncompleteTask,
+  decideCompactionAction,
   executeWriteMemory,
   executeRemoveMemory,
   executePinMemory,
@@ -140,7 +140,10 @@ export default function (pi: ExtensionAPI) {
     _handoffConsumed = false;
     const rules = parseRules();
     if (rules.handoffKeep > 0) {
-      writeHandoff(event.preparation.messagesToSummarize, event.reason, rules.handoffKeep);
+      const status = writeHandoff(event.preparation.messagesToSummarize, event.reason, rules.handoffKeep);
+      if (status === 'empty') {
+        console.error('[openpi-memory] compaction produced no handoff (no assistant text survived filtering)');
+      }
     }
   });
 
@@ -161,26 +164,17 @@ export default function (pi: ExtensionAPI) {
     if (event.reason !== 'threshold' || event.willRetry) return;
 
     const rules = parseRules();
+    const handoff = readHandoff();
+    const { action } = decideCompactionAction(rules, handoff);
 
-    // Consolidation path: extract session facts + write recap instead of plain nudge
-    if (rules.consolidateOnCompact) {
+    if (action === 'consolidate') {
+      // Extract session facts + write recap instead of a plain nudge
       const prompt = _lastCompactionSummary
         ? buildCompactionConsolidationPrompt(_lastCompactionSummary)
         : CONSOLIDATION_PROMPT;
       _lastCompactionSummary = null;
       pi.sendUserMessage(prompt, { deliverAs: 'followUp' });
-      return;
-    }
-
-    // Config-based nudge: send "Continue." for ALL threshold compactions if enabled
-    if (rules.autoResumeAfterThreshold) {
-      pi.sendUserMessage('Continue.', { deliverAs: 'followUp' });
-      return;
-    }
-
-    // Handoff-aware detection: send "Continue." if handoff suggests incomplete work
-    const handoff = readHandoff();
-    if (handoff && detectIncompleteTask(handoff)) {
+    } else if (action === 'continue') {
       pi.sendUserMessage('Continue.', { deliverAs: 'followUp' });
     }
   });

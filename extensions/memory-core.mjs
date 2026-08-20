@@ -54,6 +54,17 @@ const LOCK_STALE_MS = 10 * 1000;
 let _carryOverChecked = false; // guard: run carry-over at most once per process
 const CARRY_OVER_SENTINEL = path.join(LEGACY_MEMORY_DIR, '.shared-dir-migrated');
 
+// Diagnostics for best-effort catch blocks. These paths deliberately never throw (a broken
+// config or unreadable index must never break the host session), but silent failure left
+// users with no trail. console.error routes to pi's stderr/debug log. _lastParseErr dedups
+// the parseRules path, which runs on every turn — a persistently-broken config would
+// otherwise log identically on every call.
+let _lastParseErr = '';
+function logDiag(context, err) {
+  const msg = err && err.message ? err.message : String(err);
+  console.error(`[openpi-memory] ${context}: ${msg}`);
+}
+
 // Single source of truth for parseRules()' fallback values — used both when a field is
 // missing/invalid in memory.jsonc and when the whole file fails to read/parse.
 const DEFAULT_RULES = {
@@ -166,8 +177,9 @@ function maybeCarryOverLocalMemory() {
     // additive-only; any race-condition duplicates are cleaned by maintainIndex on next write.
     mergeLocalIntoSharedDir(SHARED_MEMORY_DIR);
     fs.writeFileSync(CARRY_OVER_SENTINEL, ''); // mark complete so future process starts skip the full pass
-  } catch {
-    // best-effort — carry-over failure must never break normal operation
+  } catch (err) {
+    // best-effort — carry-over failure must never break normal operation, but log the trail
+    logDiag('shared_dir carry-over failed', err);
   }
 }
 
@@ -366,7 +378,14 @@ export function parseRules() {
       consolidateOnCompact: typeof obj.consolidate_on_compact === 'boolean' ? obj.consolidate_on_compact : DEFAULT_RULES.consolidateOnCompact,
       sharedDir: typeof obj.shared_dir === 'boolean' ? obj.shared_dir : DEFAULT_RULES.sharedDir,
     };
-  } catch {
+  } catch (err) {
+    // Broken/unparseable config must never break the session, but surface it once per distinct
+    // error so a silent full reset to defaults leaves a trail (e.g. a stray syntax error).
+    const msg = err && err.message ? err.message : String(err);
+    if (msg !== _lastParseErr) {
+      _lastParseErr = msg;
+      logDiag('memory.jsonc parse failed, using defaults', err);
+    }
     return { ...DEFAULT_RULES };
   }
 }
@@ -417,6 +436,23 @@ export function detectIncompleteTask(handoffText) {
   return false;
 }
 
+/**
+ * Pure decision function for what to do after a threshold compaction. Encodes the branching
+ * that the session_compact handler in index.ts performs, kept here (in the plain-.mjs module
+ * the test suite imports) so the logic is unit-testable without a live pi session or a .ts
+ * loader. The handler performs the pi.sendUserMessage side effect based on the return.
+ *
+ * @param {{ consolidateOnCompact: boolean, autoResumeAfterThreshold: boolean }} rules
+ * @param {string} handoff  current handoff text ('' if none)
+ * @returns {{ action: 'consolidate' | 'continue' | 'none' }}
+ */
+export function decideCompactionAction(rules, handoff) {
+  if (rules.consolidateOnCompact) return { action: 'consolidate' };
+  if (rules.autoResumeAfterThreshold) return { action: 'continue' };
+  if (handoff && detectIncompleteTask(handoff)) return { action: 'continue' };
+  return { action: 'none' };
+}
+
 // --- File I/O helpers ---
 
 /**
@@ -443,7 +479,8 @@ export function readMemoryIndex(maxLines) {
       return truncated + `\n\n<!-- memory truncated: MEMORY.md exceeds ${maxLines}-line limit; shorten the index -->`;
     }
     return raw;
-  } catch {
+  } catch (err) {
+    logDiag('failed to read MEMORY.md', err);
     return null;
   }
 }
@@ -609,13 +646,25 @@ export function maintainIndex(lines, config, memoryDir = getMemoryDir()) {
  * Find the first index entry whose name or filename matches the search string
  * (case-insensitive, substring match).
  */
+// Locate an index entry by search string. An exact (case-insensitive) match on name or
+// filename always wins outright. Otherwise, substring matches are collected: exactly one
+// -> return it; more than one -> return an ambiguity signal so callers can refuse to mutate
+// the wrong entry; none -> null.
+// Returns { idx, parsed } | { ambiguous: true, names: string[] } | null.
 function findIndexEntry(lines, search) {
   const s = search.toLowerCase();
+  const substringMatches = [];
   for (let i = 0; i < lines.length; i++) {
     const parsed = parseIndexLine(lines[i]);
     if (!parsed) continue;
-    if (parsed.name.toLowerCase().includes(s) || parsed.filename.toLowerCase().includes(s))
-      return { idx: i, parsed };
+    const name = parsed.name.toLowerCase();
+    const file = parsed.filename.toLowerCase();
+    if (name === s || file === s) return { idx: i, parsed }; // exact match wins outright
+    if (name.includes(s) || file.includes(s)) substringMatches.push({ idx: i, parsed });
+  }
+  if (substringMatches.length === 1) return substringMatches[0];
+  if (substringMatches.length > 1) {
+    return { ambiguous: true, names: substringMatches.map(m => m.parsed.name) };
   }
   return null;
 }
@@ -771,6 +820,8 @@ export async function executeRemoveMemory({ topic }) {
     const found = findIndexEntry(lines, topic);
 
     if (!found) return `No entry found matching "${topic}".`;
+    if (found.ambiguous)
+      return `Multiple entries match "${topic}", be more specific: ${found.names.join(', ')}`;
 
     if (found.parsed.rest.includes('[pin]'))
       return `Cannot remove "${found.parsed.name}" — it is pinned. Unpin it first with: /memory unpin ${topic}`;
@@ -791,6 +842,8 @@ export async function executePinMemory({ topic, pin }) {
     const found = findIndexEntry(lines, topic);
 
     if (!found) return `No entry found matching "${topic}".`;
+    if (found.ambiguous)
+      return `Multiple entries match "${topic}", be more specific: ${found.names.join(', ')}`;
 
     const { idx, parsed } = found;
     const before = lines[idx];
@@ -819,9 +872,14 @@ export async function executePinMemory({ topic, pin }) {
  * Extract the last N assistant text messages from a messagesToSummarize array,
  * format as terse bullet points, and append a dated entry to HANDOFF.md.
  * Prunes the file to retain only the last `handoffKeep` entries.
+ * Returns a status so the caller can tell an empty/disabled handoff apart from a real write:
+ *   'disabled' — handoffKeep === 0
+ *   'empty'    — nothing survived filtering (no assistant text, or only fences/headers)
+ *   'written'  — a handoff entry was written to disk
+ * @returns {'written' | 'empty' | 'disabled'}
  */
 export function writeHandoff(messages, reason, handoffKeep = DEFAULT_HANDOFF_KEEP) {
-  if (handoffKeep === 0) return;
+  if (handoffKeep === 0) return 'disabled';
 
   // Collect assistant text blocks (skip thinking, tool calls, non-assistant roles)
   const textBlocks = [];
@@ -835,7 +893,7 @@ export function writeHandoff(messages, reason, handoffKeep = DEFAULT_HANDOFF_KEE
     if (text) textBlocks.push(text);
   }
 
-  if (textBlocks.length === 0) return;
+  if (textBlocks.length === 0) return 'empty';
 
   // Take the last 3 assistant messages (closest to the compaction cut point)
   const tail = textBlocks.slice(-3);
@@ -854,7 +912,7 @@ export function writeHandoff(messages, reason, handoffKeep = DEFAULT_HANDOFF_KEE
     }
   }
 
-  if (bullets.length === 0) return;
+  if (bullets.length === 0) return 'empty';
 
   const entry = `## ${nowIso()} (${reason})\n\n${bullets.join('\n')}\n`;
 
@@ -866,6 +924,7 @@ export function writeHandoff(messages, reason, handoffKeep = DEFAULT_HANDOFF_KEE
   const sections = updated.split(/(?=^## )/m).filter(s => s.trim());
   const pruned = sections.slice(-handoffKeep).join('\n');
   fs.writeFileSync(HANDOFF_FILE, pruned.trimStart() + '\n', 'utf8');
+  return 'written';
 }
 
 // One-time migration: if HANDOFF_FILE doesn't exist yet but the pre-relocation legacy path
