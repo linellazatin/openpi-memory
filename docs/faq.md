@@ -2,7 +2,7 @@
 
 [Back to README](../README.md)
 
-## Known limitations
+## Known limitations (for now)
 
 - Module-level injection state (`_injectedOnce`, `_turnCount`) is process-global. Safe for the standard single-user pi session; upgrade to a per-session Map if multi-session support is needed in future.
 - Manual edits to `MEMORY.md` or `memory.jsonc` made between user prompts are picked up on the next `before_agent_start` call (no cache to invalidate). This is by design.
@@ -49,3 +49,8 @@ No. `memory.jsonc` is only ever written by the extension when it doesn't exist y
 
 **Q: Does the shared directory lock/atomic-write behavior protect me from corruption if another tool writes to `~/.agents/memory/` at the same time?**
 Yes, on the pi side — writes are serialized through a real filesystem advisory lock (not just an in-process mutex) and applied atomically (write-to-temp-then-rename). This protects against corruption from concurrent pi sessions, and from any other tool that also honors the same lock convention. It does **not** guarantee safety against a tool that ignores the lock file entirely and writes directly — that's a property of the other tool's implementation, not something this extension can enforce on its own.
+
+**Q: Is the one-time `shared_dir` carry-over itself protected by that same lock?**
+**No — this is a known, deliberate gap, not an oversight.** Every ordinary mutating operation (`write_memory`, `remove_memory`, `pin_memory`) acquires the cross-process lock before touching `MEMORY.md`. The one-time merge carry-over (see [Opting in when another tool already populated the shared dir](shared-directory.md#opting-in-when-another-tool-already-populated-the-shared-dir)) deliberately does not. In the narrow window where two pi processes start for the very first time with `shared_dir: true` before either has written the `.shared-dir-migrated` sentinel yet, both can pass the guard and both perform an unlocked read-modify-write on the shared `MEMORY.md` — the second writer's save can silently clobber the first writer's appended entries.
+
+This is scoped tightly: it only matters at the literal first-ever concurrent enablement moment, never again afterward (the sentinel makes every subsequent carry-over a no-op, and every *other* operation on both sides is properly locked). If it does happen, `maintainIndex` self-heals duplicate/orphan index lines on the next ordinary write, but a clobbered append that never made it to disk at all is not recoverable automatically — you'd need to notice a missing entry and re-run `write_memory` for it. If you plan to enable `shared_dir` on two pi installations pointed at the same shared directory at the exact same time, do it one at a time rather than simultaneously to avoid this window entirely.

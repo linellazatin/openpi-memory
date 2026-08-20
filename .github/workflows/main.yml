@@ -36,6 +36,9 @@ jobs:
           body: ${{ steps.changelog.outputs.notes }}
 
       - run: npm install -g npm@latest
+      - run: npm install
+      - run: npm run typecheck
+      - run: npm test
       - run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ''
