@@ -56,6 +56,7 @@ const {
   readHandoff,
   searchMemory,
   detectIncompleteTask,
+  decideCompactionAction,
   _resetCarryOver,
 } = await import('../extensions/memory-core.mjs');
 
@@ -522,6 +523,34 @@ await test('remove_memory: unknown topic returns not-found message', async () =>
   assert.ok(result.toLowerCase().includes('no entry'), 'not-found message');
 });
 
+await test('findIndexEntry: ambiguous query refuses to mutate and lists candidates', async () => {
+  await executeWriteMemory({ topic: 'Zeta One', content: 'a', summary: 'first zeta' });
+  await executeWriteMemory({ topic: 'Zeta Two', content: 'b', summary: 'second zeta' });
+  // 'Zeta' substring-matches both -> ambiguous, no mutation
+  const pinResult = await executePinMemory({ topic: 'Zeta', pin: true });
+  assert.ok(pinResult.toLowerCase().includes('multiple entries match'), 'ambiguous pin message');
+  assert.ok(pinResult.includes('Zeta One') && pinResult.includes('Zeta Two'), 'lists both candidates');
+  const entries = readIndexEntries();
+  assert.ok(!entries.find(e => e.name === 'Zeta One').pinned, 'Zeta One not mutated');
+  assert.ok(!entries.find(e => e.name === 'Zeta Two').pinned, 'Zeta Two not mutated');
+
+  const removeResult = await executeRemoveMemory({ topic: 'Zeta' });
+  assert.ok(removeResult.toLowerCase().includes('multiple entries match'), 'ambiguous remove message');
+  assert.ok(readIndexEntries().find(e => e.name === 'Zeta One'), 'Zeta One still present after ambiguous remove');
+});
+
+await test('findIndexEntry: exact name match wins over broader substring match', async () => {
+  await executeWriteMemory({ topic: 'Zeta', content: 'exact', summary: 'exact zeta' });
+  // 'Zeta' now exactly matches one entry, even though 'Zeta One'/'Zeta Two' also contain it
+  const result = await executePinMemory({ topic: 'Zeta', pin: true });
+  assert.ok(result.startsWith('Pinned "Zeta"'), 'exact entry pinned, not ambiguous');
+  const entries = readIndexEntries();
+  assert.ok(entries.find(e => e.name === 'Zeta').pinned, 'exact Zeta is pinned');
+  assert.ok(!entries.find(e => e.name === 'Zeta One').pinned, 'Zeta One untouched');
+  // cleanup pin so later tests are unaffected
+  await executePinMemory({ topic: 'Zeta', pin: false });
+});
+
 // ═══════════════════════════════════════════════════════════
 // 8. readIndexEntries / readTopicContent
 // ═══════════════════════════════════════════════════════════
@@ -589,8 +618,24 @@ await test('writeHandoff: prunes to handoff_keep sections', async () => {
 
 await test('writeHandoff: handoff_keep=0 is a no-op', async () => {
   if (fs.existsSync(HANDOFF_FILE)) fs.unlinkSync(HANDOFF_FILE);
-  writeHandoff(fakeMessages(['Should not write']), 'manual', 0);
+  const status = writeHandoff(fakeMessages(['Should not write']), 'manual', 0);
   assert.ok(!fs.existsSync(HANDOFF_FILE), 'file not created when keep=0');
+  assert.equal(status, 'disabled', 'returns disabled status when keep=0');
+});
+
+await test('writeHandoff: returns status distinguishing empty from written', async () => {
+  if (fs.existsSync(HANDOFF_FILE)) fs.unlinkSync(HANDOFF_FILE);
+  // No assistant text at all -> empty, and nothing written
+  const emptyStatus = writeHandoff([{ role: 'user', content: [{ type: 'text', text: 'hi' }] }], 'manual', 3);
+  assert.equal(emptyStatus, 'empty', 'no assistant text -> empty status');
+  assert.ok(!fs.existsSync(HANDOFF_FILE), 'empty handoff writes nothing');
+  // Only fences/headers survive filtering -> also empty
+  const fencesOnly = writeHandoff(fakeMessages(['```\n# heading\n```']), 'manual', 3);
+  assert.equal(fencesOnly, 'empty', 'only fences/headers -> empty status');
+  // Real content -> written
+  const writtenStatus = writeHandoff(fakeMessages(['Real handoff content here']), 'manual', 3);
+  assert.equal(writtenStatus, 'written', 'real content -> written status');
+  assert.ok(fs.existsSync(HANDOFF_FILE), 'written handoff creates the file');
 });
 
 await test('readHandoff: migrates legacy HANDOFF.md forward before reading, not just writeHandoff', async () => {
@@ -749,6 +794,31 @@ await test('detectIncompleteTask: complex handoff text', async () => {
     'Should check the backup status before proceeding.',
   ].join('\n');
   assert.ok(detectIncompleteTask(complex), 'found in complex text');
+});
+
+await test('decideCompactionAction: consolidateOnCompact wins over everything', async () => {
+  const r = decideCompactionAction({ consolidateOnCompact: true, autoResumeAfterThreshold: true }, 'need to finish');
+  assert.equal(r.action, 'consolidate', 'consolidate takes priority');
+});
+
+await test('decideCompactionAction: autoResumeAfterThreshold returns continue', async () => {
+  const r = decideCompactionAction({ consolidateOnCompact: false, autoResumeAfterThreshold: true }, '');
+  assert.equal(r.action, 'continue', 'unconditional continue nudge');
+});
+
+await test('decideCompactionAction: handoff-aware continue when incomplete work detected', async () => {
+  const r = decideCompactionAction({ consolidateOnCompact: false, autoResumeAfterThreshold: false }, 'need to run the migration next');
+  assert.equal(r.action, 'continue', 'handoff signals incomplete -> continue');
+});
+
+await test('decideCompactionAction: none when nothing enabled and handoff looks complete', async () => {
+  const r = decideCompactionAction({ consolidateOnCompact: false, autoResumeAfterThreshold: false }, 'All tasks completed. Results delivered.');
+  assert.equal(r.action, 'none', 'no nudge when idle config and complete handoff');
+});
+
+await test('decideCompactionAction: none when handoff is empty', async () => {
+  const r = decideCompactionAction({ consolidateOnCompact: false, autoResumeAfterThreshold: false }, '');
+  assert.equal(r.action, 'none', 'empty handoff -> no nudge');
 });
 
 // ═══════════════════════════════════════════════════════════
