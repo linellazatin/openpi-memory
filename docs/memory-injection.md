@@ -12,7 +12,7 @@ This is fundamentally different from tools like opencode, where `system.transfor
 
 ## How this extension works around it
 
-This extension uses pi's `before_agent_start` hook, which fires **once per user prompt**. On each firing, the hook decides whether to append `## Global Memory` (the MEMORY.md index) and `## Memory Rules` to the system prompt for that turn.
+This extension uses pi's `before_agent_start` hook, which fires **once per user prompt**. On each firing, the hook decides whether to append `## Global Memory` (the MEMORY.md index) and `## Memory Rules` to the system prompt for that turn. The index is read up to a fixed 50 KiB prefix before injection; if it is larger, the injected block says it was truncated instead of loading the whole file.
 
 The injection schedule:
 

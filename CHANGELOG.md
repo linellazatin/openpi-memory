@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.3] - 2026-08-28
+
+### Fixed
+- `write_memory` now rejects structural topic names, normalizes/caps one-line index summaries, and safely quotes frontmatter metadata — prevents malformed injected index entries
+- Memory index, topic preview, and body-search reads are bounded before allocation; oversized files show a truncation notice instead of stalling pi
+- Handoff-aware auto-resume now requires a strong unfinished-work phrase (`need to`, `next step`, `pending`, etc.) instead of generic narrative words such as `then`, `should`, or `next`
+
 ## [0.3.2] - 2026-08-19 BUGFIXES + HARDENING
 
 ### Fixed

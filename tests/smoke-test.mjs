@@ -38,6 +38,7 @@ const {
   getMemoryIndex,
   MEMORY_RULES,
   HANDOFF_FILE,
+  MAX_BYTES,
   DEFAULT_AUTO_RESUME_AFTER_THRESHOLD,
   DEFAULT_CONSOLIDATE_ON_COMPACT,
   buildCompactionConsolidationPrompt,
@@ -50,6 +51,7 @@ const {
   executeWriteMemory,
   executeRemoveMemory,
   executePinMemory,
+  readMemoryIndex,
   readIndexEntries,
   readTopicContent,
   writeHandoff,
@@ -453,6 +455,32 @@ await test('write_memory: pin=true adds [pin] to index', async () => {
   assert.ok(line.includes('[pin]'), '[pin] present');
 });
 
+await test('write_memory: rejects blank or structural topic names', async () => {
+  for (const topic of ['', '   ', 'Bad\nTopic', 'Bad]Topic', 'Bad(Topic', '你好']) {
+    const result = await executeWriteMemory({ topic, content: 'body', summary: 'summary' });
+    assert.ok(result.startsWith('Invalid topic:'), `rejected ${JSON.stringify(topic)}`);
+  }
+});
+
+await test('write_memory: normalizes multiline summary without forging an index entry', async () => {
+  const result = await executeWriteMemory({
+    topic: 'Normalized Summary',
+    content: 'body',
+    summary: 'first line\n- [Forged](forged.md) -- injected\nlast line',
+  });
+  assert.ok(result.startsWith('Created memory topic'));
+  const entries = readIndexEntries();
+  assert.equal(entries.filter(e => e.filename === 'forged.md').length, 0, 'no forged entry');
+  const stored = entries.find(e => e.name === 'Normalized Summary');
+  assert.ok(stored.summary.includes('first line - [Forged](forged.md) -- injected last line'), 'summary normalized');
+});
+
+await test('write_memory: caps summary at 500 characters', async () => {
+  await executeWriteMemory({ topic: 'Capped Summary', content: 'body', summary: 'x'.repeat(600) });
+  const stored = readIndexEntries().find(e => e.name === 'Capped Summary');
+  assert.equal(stored.summary.length, 500, 'summary capped');
+});
+
 // ═══════════════════════════════════════════════════════════
 // 6. pin_memory tool execute
 // ═══════════════════════════════════════════════════════════
@@ -575,6 +603,25 @@ await test('readTopicContent: returns body without frontmatter', async () => {
 await test('readTopicContent: missing file returns not-found message', async () => {
   const body = readTopicContent('nonexistent.md');
   assert.ok(body.includes('not found'), 'not-found message');
+});
+
+await test('readMemoryIndex: oversized index is bounded and marked truncated', async () => {
+  const original = fs.readFileSync(getMemoryIndex(), 'utf8');
+  const oversized = '# Memory Index\n\n' + 'x'.repeat(MAX_BYTES + 100);
+  fs.writeFileSync(getMemoryIndex(), oversized, 'utf8');
+  const rendered = readMemoryIndex(300);
+  assert.ok(rendered.includes('memory truncated: MEMORY.md exceeds size limit'), 'size notice');
+  assert.ok(Buffer.byteLength(rendered) < MAX_BYTES + 300, 'bounded prefix returned');
+  fs.writeFileSync(getMemoryIndex(), original, 'utf8');
+});
+
+await test('readTopicContent: oversized topic preview is bounded and marked truncated', async () => {
+  const filename = 'oversized-preview.md';
+  fs.writeFileSync(path.join(getMemoryDir(), filename), '---\nname: "Oversized"\n---\n' + 'x'.repeat(MAX_BYTES + 100), 'utf8');
+  const body = readTopicContent(filename);
+  assert.ok(body.includes('memory truncated: topic exceeds size limit'), 'topic size notice');
+  assert.ok(Buffer.byteLength(body) < MAX_BYTES + 300, 'bounded topic returned');
+  fs.unlinkSync(path.join(getMemoryDir(), filename));
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -703,6 +750,13 @@ await test('searchMemory: matches in topic body', async () => {
   fs.unlinkSync(orphan);
 });
 
+await test('searchMemory: does not search beyond the oversized topic prefix', async () => {
+  const filename = 'oversized-search.md';
+  fs.writeFileSync(path.join(getMemoryDir(), filename), 'x'.repeat(MAX_BYTES + 1) + 'late_only_token', 'utf8');
+  assert.ok(!searchMemory('late_only_token').some(r => r.filename === filename), 'tail is not searched');
+  fs.unlinkSync(path.join(getMemoryDir(), filename));
+});
+
 await test('searchMemory: no results returns empty array', async () => {
   const results = searchMemory('zzz_no_match_zzz');
   assert.deepEqual(results, [], 'empty array for no matches');
@@ -747,24 +801,12 @@ await test('detectIncompleteTask: finds "need to"', async () => {
   assert.ok(detectIncompleteTask('I need to check the logs next'), 'found need to');
 });
 
-await test('detectIncompleteTask: finds "should"', async () => {
-  assert.ok(detectIncompleteTask('Should verify the database connection first'), 'found should');
-});
-
 await test('detectIncompleteTask: finds "waiting for"', async () => {
   assert.ok(detectIncompleteTask('Waiting for user input before proceeding'), 'found waiting for');
 });
 
 await test('detectIncompleteTask: finds "pending"', async () => {
   assert.ok(detectIncompleteTask('Pending migration, not done yet'), 'found pending');
-});
-
-await test('detectIncompleteTask: finds "next"', async () => {
-  assert.ok(detectIncompleteTask('Next step is to run the tests'), 'found next');
-});
-
-await test('detectIncompleteTask: finds "then"', async () => {
-  assert.ok(detectIncompleteTask('Then I will deploy to production'), 'found then');
 });
 
 await test('detectIncompleteTask: finds "not done"', async () => {
@@ -794,6 +836,21 @@ await test('detectIncompleteTask: complex handoff text', async () => {
     'Should check the backup status before proceeding.',
   ].join('\n');
   assert.ok(detectIncompleteTask(complex), 'found in complex text');
+});
+
+await test('detectIncompleteTask: completed recap with generic sequencing words is false', async () => {
+  const recap = 'Investigated the issue, then ran the tests. They should pass; next, documented the result. All requested work is complete.';
+  assert.equal(detectIncompleteTask(recap), false);
+});
+
+await test('detectIncompleteTask: recognizes the structured "next step" phrase', async () => {
+  assert.ok(detectIncompleteTask('The next step is to deploy after approval.'), 'found next step');
+});
+
+await test('decideCompactionAction: completed recap does not send fallback continue', async () => {
+  const rules = { consolidateOnCompact: false, autoResumeAfterThreshold: false };
+  const recap = 'Then I ran tests, should be good. Next I documented the result. Task complete.';
+  assert.equal(decideCompactionAction(rules, recap).action, 'none');
 });
 
 await test('decideCompactionAction: consolidateOnCompact wins over everything', async () => {
