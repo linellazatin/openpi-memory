@@ -16,6 +16,8 @@ The date stamp is a full ISO 8601 datetime with the host timezone offset (e.g. `
 - `[stale?]` — entry has not been updated in over `stale_after_days` days
 - Both tokens are optional and managed by the extension
 
+`write_memory` requires a non-empty topic that produces a filename slug; topic names cannot contain newlines or Markdown link delimiters (`[`, `]`, `(`, `)`). Its `summary` is normalized to one line and capped at 500 characters before it is written to this index.
+
 ## Stale flagging
 
 The extension stamps `[stale?]` on index entries older than `stale_after_days` (default 180). This happens during index maintenance after any write, not on read. The flag self-heals: calling `write_memory` on a stale topic removes it automatically.

@@ -10,6 +10,10 @@ A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory)
 > Considering that vast majority of people who use **pi** literally creates their own extensions, I'm shooting my shot on this memory extension that I believe is good enough to be your *ultra-simplest* memory handler.
 
 >
+> ## v0.3.3 - input + memory-read hardening
+> - unsafe memory topic metadata is rejected; summaries stay one-line; big memory files are bounded before pi loads them
+> - completed recaps no longer get a generic `Continue.` nudge just because they say `then`, `should`, or `next`
+>
 > ## v0.3.2 - bug fixes + hardening
 > - fixed `compaction_end` never firing on the pi runtime — `auto_resume_after_threshold_compaction`, `consolidate_on_compact`, and handoff-aware resume were silently dead; moved the logic to `session_compact` which actually works (and it's now unit-tested)
 > - fixed a JSONC config bug where `//` inside a value (e.g. a URL) silently reset your whole config to defaults
@@ -21,14 +25,6 @@ A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory)
 > ## v0.3.1 HOTFIX on shared_dir
 > - **`shared_dir` carry-over now merges** instead of skipping when the shared dir already has content from another memory system of ours (e.g. openpi-memory wrote first) — collisions resolved by content comparison, differing files get a `-opim` suffix
 >
-> ## v0.3.0 - MAJOR structural change
-> - `shared_dir` now a thing in the [config](docs/configuration.md#memoryjsonc) - you can opt-in on putting your memory entries (and index) to ~/.agents/memory and be SHARED between our "openlines" (lol) memory handlers for opencode ([openclaude-memory](https://github.com/linellazatin/openclaude-memory)) *(still on planning stages - to follow updates)* & pi coding agent ([openpi-memory](https://github.com/linellazatin/openpi-memory)); opting out (toggling to false) would just fallback to using our original ~/.pi/agent/memory for index and entries, but would still use the memory.jsonc config file starting this `0.3.0`.
-> - opting-in to `shared_dir` is somehow 'seamless' - see [FAQs](docs/faq.md).
-> - starting this version, the `HANDOFF` file is now living in `AGENT_DIR` (same level as memory.jsonc config file)
->
-> ```
-> and guys, sorry for multiple (MAJOR) structural modifications - all of these just came flashing into my brain, and I can't help but OBEY my mind! 
-> ```
 > see [CHANGELOG](CHANGELOG.md) for more details
 
 ## Table of contents
@@ -96,7 +92,7 @@ Just files, structure, and an agent that knows where to look.
 
 All files are plain text. You can read, edit, and delete them at any time. The default location respects `PI_CODING_AGENT_DIR` if set (pi's config-dir override).
 
-`MEMORY.md` is the index that gets injected into the system prompt. Each entry points to a topic file. Topic files hold the full content — they are read on-demand, not injected wholesale. `memory.jsonc` holds your persist rules and config scalars. `HANDOFF.md` is managed automatically by the compaction handoff feature.
+`MEMORY.md` is the index that gets injected into the system prompt. Each entry points to a topic file. Topic files hold the full content — they are read on-demand, not injected wholesale; extension previews and body search inspect only their first 50 KiB. `memory.jsonc` holds your persist rules and config scalars. `HANDOFF.md` is managed automatically by the compaction handoff feature.
 
 On the first user prompt of each session, `MEMORY.md` and the rendered rules from `memory.jsonc` are injected into the system prompt. They are re-injected every `inject_every_n_turns` prompts thereafter (default: 5). After context compaction, injection state resets so the very next prompt always re-injects.
 

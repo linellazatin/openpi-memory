@@ -10,6 +10,9 @@
 
 ## FAQ (post-0.3.0)
 
+**Q: When does a threshold compaction automatically send `Continue.`?**
+The fallback handoff-aware path only does so when the handoff has explicit unfinished-work language such as `need to`, `next step`, `pending`, `waiting for`, `not done`, `incomplete`, or `unfinished`. Ordinary completed prose containing words like `then`, `should`, or `next` does not trigger it. Set `auto_resume_after_threshold_compaction: true` in `memory.jsonc` to send `Continue.` after every threshold compaction regardless of the handoff.
+
 Questions that came up while testing the `shared_dir` migration on an actual, already-populated install.
 
 **Q: I just upgraded from a pre-0.3.0 version. Did anything of mine get deleted or overwritten?**

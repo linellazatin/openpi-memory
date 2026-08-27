@@ -17,7 +17,7 @@ Hooks used:
 | `session_start`          | Bootstrap `memory/` dir, `MEMORY.md`, and `memory.jsonc`; reset injection state             |
 | `before_agent_start`     | Inject `MEMORY.md` + rules + latest handoff entry into system prompt (once per user prompt) |
 | `session_before_compact` | Write compaction handoff to `HANDOFF.md`; reset injection state so next prompt re-injects  |
-| `compaction_end`         | Auto-resume nudge: send `"Continue."` on threshold compaction if task was incomplete        |
+| `session_compact`        | Auto-resume/consolidation after completed threshold compaction; handoff-aware fallback sends `"Continue."` only for explicit unfinished-work language |
 
 `write_memory` also carries `promptSnippet` and `promptGuidelines` so the model always has a reminder to persist, even on turns where the full memory block is not injected.
 
