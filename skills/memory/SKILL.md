@@ -76,7 +76,7 @@ Do not save:
 
 ## Writing memory
 
-Always use `write_memory` — never edit `MEMORY.md` or topic files directly. The tool:
+Always use `write_memory` — never edit `MEMORY.md` or topic files directly. Topics must be non-empty, produce a filename slug, and cannot contain newlines or Markdown link delimiters (`[`, `]`, `(`, `)`). Summaries are normalized to one line and capped at 500 characters. The tool:
 - Creates a topic file with YAML frontmatter on first write
 - On subsequent writes: appends under a dated heading (`mode: "append"`, default) or replaces the full body (`mode: "replace"`)
 - Upserts the `MEMORY.md` index entry with the correct date and summary
@@ -143,7 +143,7 @@ When you see `[stale?]` entries:
 
 ## When the cap is hit
 
-If the injected `## Global Memory` block contains a truncation warning (`memory truncated`), the index has exceeded the configured line limit (default: 300 lines) or the 50 KB hard byte cap and must be trimmed. Steps:
+If the injected `## Global Memory` block contains a truncation warning (`memory truncated`), the index has exceeded the configured line limit (default: 300 lines) or the 50 KB hard byte cap and must be trimmed. The extension reads only the first 50 KB of an oversized index; topic previews and body searches use the same 50 KB ceiling. Steps:
 
 1. Read `MEMORY.md` in full to assess all entries.
 2. Identify candidates for removal in this order:

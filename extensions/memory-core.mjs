@@ -279,6 +279,22 @@ function atomicWriteFileSync(filePath, content) {
   fs.renameSync(tmpPath, filePath);
 }
 
+// Read no more than maxBytes, checking size before allocating file contents. The final UTF-8
+// character may be incomplete when truncating; that harmless replacement character is preferable
+// to synchronously loading an unbounded shared-memory file into pi's process.
+function readTextPrefixSync(filePath, maxBytes) {
+  const size = fs.statSync(filePath).size;
+  if (size <= maxBytes) return { text: fs.readFileSync(filePath, 'utf8'), truncated: false };
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(maxBytes);
+    const bytesRead = fs.readSync(fd, buffer, 0, maxBytes, 0);
+    return { text: buffer.subarray(0, bytesRead).toString('utf8'), truncated: true };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 // --- Config (memory.jsonc) ---
 
 // Strip `//` line comments and trailing commas from JSONC, without misinterpreting
@@ -420,15 +436,13 @@ export function renderRulesToMarkdown(rules) {
 export function detectIncompleteTask(handoffText) {
   const lower = handoffText.toLowerCase();
   const keywords = [
-    /need to/i,
-    /should/i,
-    /waiting for/i,
-    /pending/i,
-    /next/i,
-    /then/i,
-    /not done/i,
-    /incomplete/i,
-    /unfinished/i,
+    /\bneed to\b/i,
+    /\bwaiting for\b/i,
+    /\bnext step\b/i,
+    /\bpending\b/i,
+    /\bnot done\b/i,
+    /\bincomplete\b/i,
+    /\bunfinished\b/i,
   ];
   for (const kw of keywords) {
     if (kw.test(lower)) return true;
@@ -468,9 +482,9 @@ export function readMemoryIndex(maxLines) {
       atomicWriteFileSync(memoryIndex, INITIAL_MEMORY);
       return INITIAL_MEMORY;
     }
-    const raw = fs.readFileSync(memoryIndex, 'utf8');
-    const lines = raw.split('\n');
-    if (Buffer.byteLength(raw) > MAX_BYTES) {
+    const { text, truncated: oversized } = readTextPrefixSync(memoryIndex, MAX_BYTES);
+    const lines = text.split('\n');
+    if (oversized) {
       const truncated = lines.slice(0, maxLines).join('\n');
       return truncated + `\n\n<!-- memory truncated: MEMORY.md exceeds size limit; shorten the index -->`;
     }
@@ -478,7 +492,7 @@ export function readMemoryIndex(maxLines) {
       const truncated = lines.slice(0, maxLines).join('\n');
       return truncated + `\n\n<!-- memory truncated: MEMORY.md exceeds ${maxLines}-line limit; shorten the index -->`;
     }
-    return raw;
+    return text;
   } catch (err) {
     logDiag('failed to read MEMORY.md', err);
     return null;
@@ -563,6 +577,18 @@ export function toSlug(topic) {
     .trim()
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-');
+}
+
+export const MAX_SUMMARY_LENGTH = 500;
+
+function normalizeMemoryMetadata(topic, summary) {
+  if (typeof topic !== 'string' || !topic.trim()) return 'topic must not be blank';
+  if (/[\r\n\[\]\(\)]/.test(topic)) return 'topic must not contain newlines or Markdown link characters';
+  if (!toSlug(topic)) return 'topic must contain at least one ASCII letter or number';
+  return {
+    topic: topic.trim(),
+    summary: String(summary).replace(/\s+/g, ' ').trim().slice(0, MAX_SUMMARY_LENGTH),
+  };
 }
 
 /**
@@ -701,7 +727,8 @@ export function searchMemory(query) {
     if (!file.endsWith('.md')) continue;
     if (SKIP.has(file) || indexedNames.has(file)) continue;
     const filePath = path.join(memoryDir, file);
-    const lines = fs.readFileSync(filePath, 'utf8').split('\n');
+    const { text } = readTextPrefixSync(filePath, MAX_BYTES);
+    const lines = text.split('\n');
     for (const line of lines) {
       if (line.toLowerCase().includes(q)) {
         const snippet = line.trim().slice(0, 120);
@@ -759,6 +786,10 @@ async function withLock(fn) {
 // Called by both pi tools (index.ts) and /memory command handler directly.
 
 export async function executeWriteMemory({ topic, content, summary, pin = false, mode = 'append', overwrite = undefined }) {
+  const metadata = normalizeMemoryMetadata(topic, summary);
+  if (typeof metadata === 'string') return `Invalid topic: ${metadata}.`;
+  ({ topic, summary } = metadata);
+
   // backwards compat: overwrite: true maps to mode: 'replace'
   const replace = mode === 'replace' || overwrite === true;
   return withLock(() => {
@@ -787,7 +818,7 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
     if (!fs.existsSync(topicPath)) {
       isNew = true;
       const frontmatter =
-        `---\nname: ${topic}\ndescription: ${summary}\ncreated: ${dt}\nlast_updated: ${dt}\nmetadata:\n  node_type: memory\n---\n\n`;
+        `---\nname: ${JSON.stringify(topic)}\ndescription: ${JSON.stringify(summary)}\ncreated: ${dt}\nlast_updated: ${dt}\nmetadata:\n  node_type: memory\n---\n\n`;
       atomicWriteFileSync(topicPath, frontmatter + content + '\n');
     } else if (replace) {
       // Replace body content; preserve frontmatter and update last_updated
@@ -983,7 +1014,10 @@ export function readIndexEntries() {
 export function readTopicContent(filename) {
   const filePath = path.join(getMemoryDir(), filename);
   if (!fs.existsSync(filePath)) return '_(file not found)_';
-  const raw = fs.readFileSync(filePath, 'utf8');
-  const fmMatch = raw.match(/^---\n[\s\S]*?\n---\n/);
-  return fmMatch ? raw.slice(fmMatch[0].length).trimStart() : raw;
+  const { text, truncated } = readTextPrefixSync(filePath, MAX_BYTES);
+  const fmMatch = text.match(/^---\n[\s\S]*?\n---\n/);
+  const body = fmMatch ? text.slice(fmMatch[0].length).trimStart() : text;
+  return truncated
+    ? body + '\n\n<!-- memory truncated: topic exceeds size limit; read the file directly for the full body -->'
+    : body;
 }
