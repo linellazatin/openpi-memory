@@ -10,6 +10,10 @@ A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory)
 > Considering that vast majority of people who use **pi** literally creates their own extensions, I'm shooting my shot on this memory extension that I believe is good enough to be your *ultra-simplest* memory handler.
 
 >
+> ## v0.3.4 - smarter consolidation
+> - automatic threshold consolidation now stores pi's compaction summary as the `HANDOFF.md` orientation entry — a coherent next-session handoff instead of a raw last-messages scrape
+> - consolidation persists durable facts driven by your `memory.jsonc` rules, keeping the memory index lean
+>
 > ## v0.3.3 - input + memory-read hardening
 > - unsafe memory topic metadata is rejected; summaries stay one-line; big memory files are bounded before pi loads them
 > - completed recaps no longer get a generic `Continue.` nudge just because they say `then`, `should`, or `next`
@@ -21,9 +25,6 @@ A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory)
 > - `remove`/`pin` on an ambiguous topic now refuses and lists candidates instead of guessing; an exact name match always wins
 > - added static type-checking (`tsc`) + CI now actually runs tests/typecheck on every push and before publish (none of this ran in CI before)
 > - smaller fixes: path traversal guard on `MEMORY.md` filenames, `remove`/`pin` now also run index maintenance, stale `overwrite` prompt wording corrected, empty-handoff now signalled
->
-> ## v0.3.1 HOTFIX on shared_dir
-> - **`shared_dir` carry-over now merges** instead of skipping when the shared dir already has content from another memory system of ours (e.g. openpi-memory wrote first) — collisions resolved by content comparison, differing files get a `-opim` suffix
 >
 > see [CHANGELOG](CHANGELOG.md) for more details
 
@@ -119,7 +120,7 @@ Use these instead of asking the agent to edit files directly — they guarantee 
 ```
 /memory                    → open interactive memory browser
 /memory <text>             → store something (agent picks topic, summary, pin)
-/memory consolidate        → scan conversation; write undocumented facts + session recap
+/memory consolidate        → scan conversation; persist durable facts per memory.jsonc rules
 /memory pin <topic>        → pin an entry
 /memory unpin <topic>      → unpin an entry
 /memory remove <topic>     → remove an index entry
@@ -141,9 +142,9 @@ Use these instead of asking the agent to edit files directly — they guarantee 
 
 **`/memory search <query>`** does a case-insensitive substring search across the index (name, filename, summary) and all topic file bodies. Matching entries open in the full interactive browser — same pin/unpin, remove, and detail view as `/memory`. No LLM round-trip.
 
-**`/memory consolidate`** sends a structured prompt to the agent asking it to scan the current conversation history and call `write_memory` for each fact, decision, discovery, config detail, or technical learning not yet in the index. As a final step, the agent writes a `last-session-recap` entry (`mode: replace`) — a 3–5 sentence narrative of what was accomplished this session. That recap entry is injected into the system prompt at the start of the next session, orienting the agent without requiring the user to re-explain context.
+**`/memory consolidate`** sends a rules-driven prompt to the agent asking it to scan the current conversation history and call `write_memory` for each fact, decision, discovery, config detail, or technical learning that belongs in long-term memory under your current `memory.jsonc` rules (`always_persist`/`never_persist`/`always_ask` are rendered into the prompt), keeping the index focused on durable facts.
 
-When triggered via `consolidate_on_compact`, the extension feeds pi's already-generated compaction summary directly to the agent instead of asking it to re-scan the full conversation — saving one LLM scan turn. When invoked manually via `/memory consolidate`, the agent scans the live conversation history.
+When triggered via `consolidate_on_compact`, the extension feeds pi's already-generated compaction summary directly to the agent instead of asking it to re-scan the full conversation (saving one LLM scan turn), and additionally stores that summary as the latest `HANDOFF.md` entry so the next session gets a coherent one-time orientation. When invoked manually via `/memory consolidate`, the agent scans the live conversation history.
 
 Cost: one LLM round-trip (extraction only when via compaction; scan + extract when manual). Use at natural breakpoints — before closing a long session, before switching contexts, or any time you want the session's learnings captured. Enable `consolidate_on_compact: true` in `memory.jsonc` to run consolidation automatically after threshold compaction.
 
