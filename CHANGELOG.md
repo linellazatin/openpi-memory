@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.4] - 2026-08-29
+
+### Changed
+- `last-session-recap` retired — `write_memory` rejects the topic (all slug aliases); it duplicated the durable facts consolidation already writes and bloated `MEMORY.md` on every run
+- Consolidation prompts now use the current `memory.jsonc` persist rules instead of a separate hard-coded policy; both manual and automatic consolidation are told not to write a session recap
+- Automatic threshold consolidation now stores pi's compaction summary as the `HANDOFF.md` entry (capped, headings demoted, marked consumed to avoid double-injection) instead of a raw last-messages scrape
+
+### Added
+- One-time startup cleanup removes existing `last-session-recap` index lines from both local and shared `MEMORY.md`; the topic file on disk is kept (temporary: `retireRecapEntries` will be removed once this cleanup is no longer needed)
+
 ## [0.3.3] - 2026-08-28
 
 ### Fixed

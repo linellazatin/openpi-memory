@@ -47,8 +47,6 @@ When calling `write_memory`, assign the topic to one of four categories. Types a
 | `project` | Ongoing work, decisions, constraints, deadlines | When you learn a non-obvious constraint, decision, or stakeholder requirement | Fact → **Why:** → **How to apply:** |
 | `reference` | Pointers to external systems | When you learn where information lives (repos, boards, dashboards, channels, issue trackers) | Plain prose |
 
-**`last-session-recap`** is a special replace-mode entry written automatically by `/memory consolidate` (and `consolidate_on_compact`). It holds a 3–5 sentence narrative of what was accomplished in the most recent session. Always exactly one entry (mode: replace). Injected on the next session start as part of the normal `## Global Memory` block — do not write this topic manually.
-
 For `feedback` and `project` types, structure the body like this:
 
 ```
@@ -166,7 +164,7 @@ The `/memory` command provides an interactive TUI browser. From it you can:
 
 `/memory search <query>` opens the same browser pre-filtered to matching entries.
 
-`/memory consolidate` instructs the agent to scan the current conversation and call `write_memory` for each undocumented fact, decision, discovery, or config detail. As a final step it writes a `last-session-recap` entry (`mode: replace`) — a brief narrative of what was accomplished — which is injected into the system prompt at the start of the next session. Use at natural session breakpoints or before switching context. Enable `consolidate_on_compact: true` in `memory.jsonc` to run this automatically after threshold compaction.
+`/memory consolidate` instructs the agent to scan the current conversation and call `write_memory` for each undocumented fact, decision, discovery, or config detail that belongs in memory under your current `memory.jsonc` rules. Use at natural session breakpoints or before switching context. Enable `consolidate_on_compact: true` in `memory.jsonc` to run this automatically after threshold compaction; that path also stores pi's compaction summary as the next `HANDOFF.md` orientation entry.
 
 ## Persist rules
 

@@ -32,7 +32,7 @@ When the agent finishes a task and threshold compaction fires, the extension can
 
 **Two modes:**
 1. **Config-based nudge** — if `auto_resume_after_threshold_compaction: true` in `memory.jsonc`, sends `"Continue."` after ALL threshold compactions.
-2. **Handoff-aware detection** — automatically sends `"Continue."` if the handoff content contains keywords suggesting incomplete work (e.g. "need to", "should", "waiting for", "pending", "next", "then"). Works regardless of the config setting.
+2. **Handoff-aware detection** — automatically sends `"Continue."` if the handoff content contains a strong unfinished-work phrase (e.g. "need to", "waiting for", "next step", "pending", "not done", "incomplete", "unfinished"). Works regardless of the config setting.
 
 **Why it's safe:** Threshold compaction only fires after turns with no tool calls, meaning the agent has finished its current task. The nudge is appropriate here — it's saying "you finished that task, what's next?"
 
@@ -42,4 +42,4 @@ When the agent finishes a task and threshold compaction fires, the extension can
 
 Both modes are gated on `reason === 'threshold' && !willRetry` — manual `/compact` and overflow compactions never trigger it.
 
-`consolidate_on_compact: true` in `memory.jsonc` supersedes both modes — when consolidation is enabled, it fires instead of the plain `"Continue."` nudge. The extension uses pi's already-generated compaction summary as input (captured at `session_compact`), so the agent only needs to extract facts — no full conversation scan.
+`consolidate_on_compact: true` in `memory.jsonc` supersedes both modes — when consolidation is enabled, it fires instead of the plain `"Continue."` nudge. The extension uses pi's already-generated compaction summary as input (captured at `session_compact`), so the agent only needs to persist durable facts per your `memory.jsonc` rules — no full conversation scan. It also stores that compaction summary as the latest `HANDOFF.md` entry, so the next session's one-time handoff injection is a coherent summary rather than a raw pre-compaction scrape.

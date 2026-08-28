@@ -74,7 +74,8 @@ Maintenance never runs on read — only on write. The on-disk `MEMORY.md` has no
   "handoff_keep": 3,
   // auto_resume_after_threshold_compaction: send "Continue." after threshold compaction; false = off
   "auto_resume_after_threshold_compaction": false,
-  // consolidate_on_compact: run /memory consolidate after threshold compaction instead of plain "Continue."; false = off
+  // consolidate_on_compact: after threshold compaction, persist durable facts per these rules
+  // and store pi's compaction summary as the HANDOFF.md orientation entry, instead of a plain "Continue."; false = off
   "consolidate_on_compact": false,
   // shared_dir: redirect the memory index and topic files to ~/.agents/memory/, shared across tools
   // that use the same on-disk format. Does not affect where this config file itself lives. false = off

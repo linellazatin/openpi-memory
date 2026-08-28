@@ -10,10 +10,11 @@
  * Config: ~/.pi/agent/memory.jsonc — persist rules + config scalars (always per-tool, never shared)
  *
  * Hooks used:
- *   session_start          — bootstrap memory dir + files; reset injection state
+ *   session_start          — bootstrap memory dir + files; reset injection state; retire last-session-recap index entry
  *   before_agent_start    — inject memory + rules into system prompt (once per user prompt)
- *   session_before_compact — reset injection state so next prompt always re-injects
- *   session_compact        — capture compaction summary + auto-resume nudge after threshold compaction
+ *   session_before_compact — write raw handoff; reset injection state so next prompt always re-injects
+ *   session_compact        — after threshold compaction: auto-resume nudge, or (consolidate) replace the
+ *                            handoff with pi's summary + send a rules-driven consolidation prompt
  *                            (compaction_end is not delivered to extensions by the pi runtime —
  *                            see the comment on the session_compact handler for details)
  *
@@ -28,15 +29,17 @@ import {
   getMemoryDir,
   MEMORY_RULES,
   MAX_LINES,
-  CONSOLIDATION_PROMPT,
+  buildConsolidationPrompt,
   buildCompactionConsolidationPrompt,
   parseRules,
   renderRulesToMarkdown,
   readMemoryIndex,
+  retireRecapEntries,
   readIndexEntries,
   readTopicContent,
   readHandoff,
   writeHandoff,
+  replaceLatestHandoffWithCompactionSummary,
   searchMemory,
   decideCompactionAction,
   executeWriteMemory,
@@ -81,6 +84,7 @@ export default function (pi: ExtensionAPI) {
   pi.on('session_start', () => {
     parseRules();               // creates memory.jsonc with defaults if missing
     readMemoryIndex(MAX_LINES); // creates MEMORY.md if missing
+    retireRecapEntries();       // strip the retired last-session-recap index entry (files kept)
     _injectedOnce = false;
     _turnCount = 0;
     _handoffConsumed = false;
@@ -168,10 +172,21 @@ export default function (pi: ExtensionAPI) {
     const { action } = decideCompactionAction(rules, handoff);
 
     if (action === 'consolidate') {
-      // Extract session facts + write recap instead of a plain nudge
+      // Replace the raw pre-compaction handoff with pi's coherent post-compaction summary,
+      // so the next session's one-time handoff injection is the summary, not a raw scrape.
+      // The summary is also handed to the follow-up prompt below, so mark it consumed to
+      // avoid injecting the same text twice in this continuing session (a fresh session
+      // resets _handoffConsumed and will surface it once).
+      if (_lastCompactionSummary && rules.handoffKeep > 0) {
+        replaceLatestHandoffWithCompactionSummary(_lastCompactionSummary, event.reason, rules.handoffKeep);
+        _handoffConsumed = true;
+      }
+      // Persist durable memory per the user's memory.jsonc rules. last-session-recap is retired:
+      // the prompt prohibits it and the write seam hard-blocks it.
+      const rulesMarkdown = renderRulesToMarkdown(rules);
       const prompt = _lastCompactionSummary
-        ? buildCompactionConsolidationPrompt(_lastCompactionSummary)
-        : CONSOLIDATION_PROMPT;
+        ? buildCompactionConsolidationPrompt(_lastCompactionSummary, rulesMarkdown)
+        : buildConsolidationPrompt(rulesMarkdown);
       _lastCompactionSummary = null;
       pi.sendUserMessage(prompt, { deliverAs: 'followUp' });
     } else if (action === 'continue') {
@@ -484,12 +499,13 @@ export default function (pi: ExtensionAPI) {
 
       // consolidate
       if (trimmed.toLowerCase() === 'consolidate') {
+        const consolidatePrompt = buildConsolidationPrompt(renderRulesToMarkdown(parseRules()));
         if (!ctx.isIdle()) {
           ctx.ui.notify('Agent is busy — consolidation queued as follow-up.', 'info');
-          pi.sendUserMessage(CONSOLIDATION_PROMPT, { deliverAs: 'followUp' });
+          pi.sendUserMessage(consolidatePrompt, { deliverAs: 'followUp' });
           return;
         }
-        pi.sendUserMessage(CONSOLIDATION_PROMPT);
+        pi.sendUserMessage(consolidatePrompt);
         return;
       }
 
