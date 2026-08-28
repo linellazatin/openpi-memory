@@ -81,34 +81,33 @@ const DEFAULT_RULES = {
 };
 
 /**
- * Prompt sent to the agent by /memory consolidate and compaction_end consolidation path.
- * Instructs the agent to extract undocumented facts from the conversation and persist them,
- * then write a last-session-recap entry to orient the next session.
+ * Consolidation is policy-driven: what to persist is defined by the user's memory.jsonc rules
+ * (rendered via renderRulesToMarkdown), not by a second hard-coded policy baked into this prompt.
+ * The retired last-session-recap topic is explicitly prohibited here (and hard-blocked at the
+ * write seam); automatic compaction orientation is managed by the extension in HANDOFF.md.
  */
-const CONSOLIDATION_BODY =
-`Focus on:
-- Facts, configurations, or environment details learned
-- Decisions made and the reasoning behind them
-- Issues solved and how they were resolved
-- Reusable commands, workflows, or patterns discovered
-- User preferences stated explicitly
+function consolidationInstruction(rulesMarkdown) {
+  const rulesBlock = rulesMarkdown ? `\n\n${rulesMarkdown}` : '';
+  return `persist only what belongs in long-term memory under these current Memory Rules:${rulesBlock}
 
-Skip anything already present in the ## Global Memory index, anything ephemeral or session-specific, and large code blocks (summarize or reference the file path instead).
+For each item worth keeping, call write_memory with an appropriate topic, content, summary, and mode. Skip anything already in the ## Global Memory index, anything ephemeral or session-specific, and large code blocks (summarize or reference the file path instead). Combine closely related session facts into one topic where that keeps the entry clear.
 
-As a final step, call write_memory with topic "last-session-recap", mode "replace", and pin false. Write a 3-5 sentence narrative summary of what was accomplished this session — this entry will be injected at the start of the next session to orient you quickly.`;
-
-export const CONSOLIDATION_PROMPT =
-`Review our conversation history and identify anything worth preserving across sessions that has not been written to memory yet. For each item, call write_memory with an appropriate topic, content, summary, and mode.
-
-${CONSOLIDATION_BODY}`;
+Do not write a session recap, and do not write a topic whose slug is "last-session-recap" — that mechanism has been retired; automatic compaction orientation is managed in HANDOFF.md.`;
+}
 
 /**
- * Build a targeted consolidation prompt from a pre-generated compaction summary.
- * Cheaper than CONSOLIDATION_PROMPT: skips the full conversation scan — the summary
- * is already compressed and comprehensive.
+ * Prompt for manual /memory consolidate: scans the live conversation. Rules-driven.
  */
-export function buildCompactionConsolidationPrompt(summary) {
-  return `The following is the session summary pi just generated during compaction:\n\n${summary}\n\nUsing this summary, extract anything worth preserving across sessions that has not been written to memory yet. For each item, call write_memory with an appropriate topic, content, summary, and mode.\n\n${CONSOLIDATION_BODY}`;
+export function buildConsolidationPrompt(rulesMarkdown) {
+  return `Review our conversation history and ${consolidationInstruction(rulesMarkdown)}`;
+}
+
+/**
+ * Prompt for automatic threshold-compaction consolidation. Uses pi's already-generated
+ * compaction summary instead of a full-history scan. Rules-driven.
+ */
+export function buildCompactionConsolidationPrompt(summary, rulesMarkdown) {
+  return `The following is the session summary pi just generated during compaction:\n\n${summary}\n\nReview this summary and ${consolidationInstruction(rulesMarkdown)}`;
 }
 
 // --- Initial file content ---
@@ -499,6 +498,27 @@ export function readMemoryIndex(maxLines) {
   }
 }
 
+// One-time, non-destructive cleanup: strip the retired last-session-recap entry from the
+// index in BOTH the legacy and shared directories (so a later shared_dir toggle can't
+// resurrect it), without touching the topic file on disk. Idempotent — only rewrites an
+// index that actually still contains the line. Safe to call on every session start.
+export function retireRecapEntries() {
+  for (const dir of [LEGACY_MEMORY_DIR, SHARED_MEMORY_DIR]) {
+    const indexPath = path.join(dir, 'MEMORY.md');
+    if (!fs.existsSync(indexPath)) continue;
+    try {
+      const lines = fs.readFileSync(indexPath, 'utf8').split('\n');
+      const kept = lines.filter(line => {
+        const parsed = parseIndexLine(line);
+        return !(parsed && parsed.filename === `${RESERVED_TOPIC_SLUG}.md`);
+      });
+      if (kept.length !== lines.length) atomicWriteFileSync(indexPath, kept.join('\n'));
+    } catch (err) {
+      logDiag('failed to retire last-session-recap index entries', err);
+    }
+  }
+}
+
 // --- Index line helpers ---
 
 /**
@@ -580,6 +600,12 @@ export function toSlug(topic) {
 }
 
 export const MAX_SUMMARY_LENGTH = 500;
+
+// Retired topic slug: last-session-recap is no longer a valid write target. Its role (durable
+// session orientation) is superseded by durable topic memories plus the extension-managed
+// HANDOFF.md compaction summary. Rejecting by normalized slug catches every alias
+// ('Last Session Recap', 'last session recap', etc.) that toSlug() maps to this name.
+export const RESERVED_TOPIC_SLUG = 'last-session-recap';
 
 function normalizeMemoryMetadata(topic, summary) {
   if (typeof topic !== 'string' || !topic.trim()) return 'topic must not be blank';
@@ -790,6 +816,10 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
   if (typeof metadata === 'string') return `Invalid topic: ${metadata}.`;
   ({ topic, summary } = metadata);
 
+  if (toSlug(topic) === RESERVED_TOPIC_SLUG) {
+    return `Reserved topic: "${RESERVED_TOPIC_SLUG}" has been retired. Persist durable facts as their own topics; automatic session orientation is managed in HANDOFF.md.`;
+  }
+
   // backwards compat: overwrite: true maps to mode: 'replace'
   const replace = mode === 'replace' || overwrite === true;
   return withLock(() => {
@@ -953,6 +983,41 @@ export function writeHandoff(messages, reason, handoffKeep = DEFAULT_HANDOFF_KEE
 
   // Prune: keep only the last handoffKeep `##` sections
   const sections = updated.split(/(?=^## )/m).filter(s => s.trim());
+  const pruned = sections.slice(-handoffKeep).join('\n');
+  fs.writeFileSync(HANDOFF_FILE, pruned.trimStart() + '\n', 'utf8');
+  return 'written';
+}
+
+// Max bytes of pi compaction summary persisted into a single HANDOFF entry. Real observed
+// threshold summaries run ~1-7 KB; this ceiling keeps one injected handoff bounded.
+export const MAX_HANDOFF_SUMMARY_BYTES = 12 * 1024;
+
+/**
+ * Automatic threshold-consolidation handoff: replace the latest HANDOFF entry (the raw
+ * last-assistant-message scrape written by writeHandoff in session_before_compact) with pi's
+ * post-compaction summary, which is a more coherent orientation than the raw scrape. Embedded
+ * `## ` headings in the summary are demoted to `### ` so the summary stays a single retained
+ * section (readHandoff/pruning split on top-level `## `). Oversized summaries are capped.
+ * Respects the handoff_keep disable contract. Returns 'written' | 'disabled'.
+ * @returns {'written' | 'disabled'}
+ */
+export function replaceLatestHandoffWithCompactionSummary(summary, reason, handoffKeep = DEFAULT_HANDOFF_KEEP) {
+  if (handoffKeep === 0) return 'disabled';
+
+  let body = String(summary).replace(/^## /gm, '### ').trim();
+  if (Buffer.byteLength(body) > MAX_HANDOFF_SUMMARY_BYTES) {
+    body = Buffer.from(body, 'utf8').subarray(0, MAX_HANDOFF_SUMMARY_BYTES).toString('utf8')
+      + '\n\n<!-- summary truncated: compaction summary exceeds size limit -->';
+  }
+
+  const entry = `## ${nowIso()} Consolidation (${reason})\n\n${body}\n`;
+
+  migrateLegacyHandoff();
+  const existing = fs.existsSync(HANDOFF_FILE) ? fs.readFileSync(HANDOFF_FILE, 'utf8') : '';
+  const sections = existing.split(/(?=^## )/m).filter(s => s.trim());
+  // Replace the latest section (the raw pre-compaction handoff) rather than append a second one.
+  if (sections.length > 0) sections[sections.length - 1] = entry;
+  else sections.push(entry);
   const pruned = sections.slice(-handoffKeep).join('\n');
   fs.writeFileSync(HANDOFF_FILE, pruned.trimStart() + '\n', 'utf8');
   return 'written';

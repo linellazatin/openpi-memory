@@ -42,6 +42,7 @@ const {
   DEFAULT_AUTO_RESUME_AFTER_THRESHOLD,
   DEFAULT_CONSOLIDATE_ON_COMPACT,
   buildCompactionConsolidationPrompt,
+  buildConsolidationPrompt,
   parseRules,
   renderRulesToMarkdown,
   toSlug,
@@ -55,11 +56,13 @@ const {
   readIndexEntries,
   readTopicContent,
   writeHandoff,
+  replaceLatestHandoffWithCompactionSummary,
   readHandoff,
   searchMemory,
   detectIncompleteTask,
   decideCompactionAction,
   _resetCarryOver,
+  retireRecapEntries,
 } = await import('../extensions/memory-core.mjs');
 
 // ── Test runner ───────────────────────────────────────────────────────────
@@ -479,6 +482,15 @@ await test('write_memory: caps summary at 500 characters', async () => {
   await executeWriteMemory({ topic: 'Capped Summary', content: 'body', summary: 'x'.repeat(600) });
   const stored = readIndexEntries().find(e => e.name === 'Capped Summary');
   assert.equal(stored.summary.length, 500, 'summary capped');
+});
+
+await test('write_memory: rejects retired last-session-recap topic (all slug variants)', async () => {
+  for (const topic of ['last-session-recap', 'Last Session Recap', 'last session recap', 'LAST-SESSION-RECAP']) {
+    const result = await executeWriteMemory({ topic, content: 'body', summary: 'recap' });
+    assert.ok(result.startsWith('Reserved topic:'), `rejected ${JSON.stringify(topic)}`);
+    assert.ok(!fs.existsSync(path.join(getMemoryDir(), 'last-session-recap.md')), 'no recap file created');
+    assert.ok(!readIndexEntries().some(e => e.filename === 'last-session-recap.md'), 'no recap index entry');
+  }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -903,26 +915,43 @@ await test('parseRules: consolidateOnCompact=false from JSONC', async () => {
 });
 
 // ═══════════════════════════════════════════════════════════
-// 13. buildCompactionConsolidationPrompt
+// 13. consolidation prompt builders (rules-driven)
 // ═══════════════════════════════════════════════════════════
 
-console.log('\n--- 13. buildCompactionConsolidationPrompt ---');
+console.log('\n--- 13. consolidation prompt builders ---');
 
-await test('returns a string containing the summary text', async () => {
+const SAMPLE_RULES_MD = renderRulesToMarkdown({
+  alwaysPersist: ['A verified deployment fact'],
+  neverPersist: ['Ephemeral task state'],
+  alwaysAsk: [],
+});
+
+await test('buildCompactionConsolidationPrompt: includes summary and rendered rules', async () => {
   const summary = 'We implemented the memory consolidation feature.';
-  const prompt = buildCompactionConsolidationPrompt(summary);
-  assert.ok(typeof prompt === 'string', 'returns a string');
+  const prompt = buildCompactionConsolidationPrompt(summary, SAMPLE_RULES_MD);
   assert.ok(prompt.includes(summary), 'contains the summary');
+  assert.ok(prompt.includes('A verified deployment fact'), 'embeds current always_persist rule');
+  assert.ok(prompt.includes('Ephemeral task state'), 'embeds current never_persist rule');
 });
 
-await test('contains write_memory instruction', async () => {
-  const prompt = buildCompactionConsolidationPrompt('test summary');
-  assert.ok(prompt.includes('write_memory'), 'mentions write_memory');
+await test('buildConsolidationPrompt: includes rendered rules, no summary needed', async () => {
+  const prompt = buildConsolidationPrompt(SAMPLE_RULES_MD);
+  assert.ok(prompt.includes('A verified deployment fact'), 'embeds current rules');
 });
 
-await test('contains last-session-recap instruction', async () => {
-  const prompt = buildCompactionConsolidationPrompt('test summary');
-  assert.ok(prompt.includes('last-session-recap'), 'mentions last-session-recap');
+await test('consolidation prompts prohibit the retired recap and drop the old narrative instruction', async () => {
+  for (const prompt of [buildConsolidationPrompt(SAMPLE_RULES_MD), buildCompactionConsolidationPrompt('s', SAMPLE_RULES_MD)]) {
+    assert.ok(/last-session-recap/.test(prompt), 'names the retired topic in the prohibition');
+    assert.ok(!/3-5 sentence/.test(prompt), 'no old 3-5 sentence narrative instruction');
+    assert.ok(!/call write_memory with topic "last-session-recap"/.test(prompt), 'no recap write instruction');
+    assert.ok(/do not write a session recap/i.test(prompt), 'explicitly prohibits a session recap');
+  }
+});
+
+await test('consolidation prompts reflect edits to the rules (uses current rendering, not a static policy)', async () => {
+  const customMd = renderRulesToMarkdown({ alwaysPersist: ['UNIQUE_RULE_TOKEN_XYZ'], neverPersist: [], alwaysAsk: [] });
+  assert.ok(buildConsolidationPrompt(customMd).includes('UNIQUE_RULE_TOKEN_XYZ'), 'manual builder reflects current rules');
+  assert.ok(buildCompactionConsolidationPrompt('s', customMd).includes('UNIQUE_RULE_TOKEN_XYZ'), 'compaction builder reflects current rules');
 });
 
 console.log('\n--- 14. shared_dir / legacy fallback / carry-over / lock / atomic writes ---');
@@ -1160,6 +1189,113 @@ await test('atomic write: no leftover temp file after a successful write', async
   const memoryDir = getMemoryDir();
   const leftovers = fs.readdirSync(memoryDir).filter(f => f.includes('.tmp-'));
   assert.equal(leftovers.length, 0, 'no .tmp- files remain');
+});
+
+// ═══════════════════════════════════════════════════════════
+// 15. retireRecapEntries — one-time recap index cleanup
+// ═══════════════════════════════════════════════════════════
+
+console.log('\n--- 15. retireRecapEntries ---');
+
+await test('retireRecapEntries: removes recap index line from local + shared, preserves files', async () => {
+  for (const dir of [LEGACY_DIR_PATH, SHARED_DIR_PATH]) {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'MEMORY.md'),
+      '# Memory Index\n\n- [Keep Me](keep-me.md) 2026-01-01 -- durable\n- [last-session-recap](last-session-recap.md) 2026-01-02 -- recap\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'last-session-recap.md'), '---\nname: last-session-recap\n---\nbody', 'utf8');
+    fs.writeFileSync(path.join(dir, 'keep-me.md'), '---\nname: Keep Me\n---\nbody', 'utf8');
+  }
+
+  retireRecapEntries();
+
+  for (const dir of [LEGACY_DIR_PATH, SHARED_DIR_PATH]) {
+    const idx = fs.readFileSync(path.join(dir, 'MEMORY.md'), 'utf8');
+    assert.ok(!idx.includes('last-session-recap.md'), `recap line removed from ${dir}`);
+    assert.ok(idx.includes('keep-me.md'), `durable line preserved in ${dir}`);
+    assert.ok(fs.existsSync(path.join(dir, 'last-session-recap.md')), `recap file preserved on disk in ${dir}`);
+  }
+});
+
+await test('retireRecapEntries: idempotent and a no-op when no recap entry exists', async () => {
+  const before = fs.readFileSync(path.join(LEGACY_DIR_PATH, 'MEMORY.md'), 'utf8');
+  retireRecapEntries();
+  const after = fs.readFileSync(path.join(LEGACY_DIR_PATH, 'MEMORY.md'), 'utf8');
+  assert.equal(after, before, 'second run changes nothing');
+});
+
+// ═══════════════════════════════════════════════════════════
+// 16. replaceLatestHandoffWithCompactionSummary
+// ═══════════════════════════════════════════════════════════
+
+console.log('\n--- 16. replaceLatestHandoffWithCompactionSummary ---');
+
+// Isolate from the section-9 legacy-migration fixture: migrateLegacyHandoff() re-hydrates
+// TMP/memory/HANDOFF.md whenever HANDOFF_FILE is missing, so clear both for exact-count tests.
+const LEGACY_HANDOFF_PATH = path.join(TMP, 'memory', 'HANDOFF.md');
+function clearHandoffs() {
+  if (fs.existsSync(HANDOFF_FILE)) fs.unlinkSync(HANDOFF_FILE);
+  if (fs.existsSync(LEGACY_HANDOFF_PATH)) fs.unlinkSync(LEGACY_HANDOFF_PATH);
+}
+
+await test('replaceLatestHandoff: replaces the raw pre-compaction entry with one summary section', async () => {
+  clearHandoffs();
+  writeHandoff(fakeMessages(['raw pre-compaction assistant bullet ZZZ']), 'threshold', 3);
+  const status = replaceLatestHandoffWithCompactionSummary('Summary body line one.', 'threshold', 3);
+  assert.equal(status, 'written', 'returns written');
+  const content = fs.readFileSync(HANDOFF_FILE, 'utf8');
+  const topLevel = content.split('\n').filter(l => /^## /.test(l));
+  assert.equal(topLevel.length, 1, 'exactly one top-level section');
+  assert.ok(/^## .*Consolidation \(threshold\)/m.test(content), 'labelled consolidation header');
+  assert.ok(content.includes('Summary body line one.'), 'summary body present');
+  assert.ok(!content.includes('raw pre-compaction assistant bullet ZZZ'), 'raw handoff replaced, not appended');
+});
+
+await test('replaceLatestHandoff: readHandoff returns the full summary section', async () => {
+  const entry = readHandoff();
+  assert.ok(entry.includes('Summary body line one.'), 'readHandoff returns the summary');
+  assert.ok(/Consolidation \(threshold\)/.test(entry), 'header included');
+});
+
+await test('replaceLatestHandoff: demotes embedded ## headings so the section is not split', async () => {
+  clearHandoffs();
+  const summary = '## Goal\ndo the thing\n## Done\nfinished part';
+  replaceLatestHandoffWithCompactionSummary(summary, 'threshold', 3);
+  const content = fs.readFileSync(HANDOFF_FILE, 'utf8');
+  const topLevel = content.split('\n').filter(l => /^## /.test(l));
+  assert.equal(topLevel.length, 1, 'embedded ## headings demoted, only our header is top-level');
+  assert.ok(content.includes('### Goal') && content.includes('### Done'), 'headings demoted to ###');
+  // readHandoff returns the whole section including its own top-level header, plus demoted body
+  assert.equal(readHandoff().split('\n').filter(l => /^## /.test(l)).length, 1, 'only the section header is top-level');
+});
+
+await test('replaceLatestHandoff: caps oversized summary and marks truncation', async () => {
+  clearHandoffs();
+  const huge = 'x'.repeat(20000);
+  replaceLatestHandoffWithCompactionSummary(huge, 'threshold', 3);
+  const content = fs.readFileSync(HANDOFF_FILE, 'utf8');
+  assert.ok(Buffer.byteLength(content) < 14000, 'entry bounded');
+  assert.ok(content.includes('summary truncated'), 'truncation marker present');
+});
+
+await test('replaceLatestHandoff: handoff_keep=0 is disabled and writes nothing', async () => {
+  clearHandoffs();
+  const status = replaceLatestHandoffWithCompactionSummary('body', 'threshold', 0);
+  assert.equal(status, 'disabled', 'returns disabled');
+  assert.ok(!fs.existsSync(HANDOFF_FILE), 'no file created when keep=0');
+});
+
+await test('replaceLatestHandoff: prunes to handoff_keep sections across repeated compactions', async () => {
+  clearHandoffs();
+  replaceLatestHandoffWithCompactionSummary('first', 'threshold', 2);
+  writeHandoff(fakeMessages(['raw second']), 'threshold', 2);
+  replaceLatestHandoffWithCompactionSummary('second', 'threshold', 2);
+  writeHandoff(fakeMessages(['raw third']), 'threshold', 2);
+  replaceLatestHandoffWithCompactionSummary('third', 'threshold', 2);
+  const content = fs.readFileSync(HANDOFF_FILE, 'utf8');
+  const topLevel = content.split('\n').filter(l => /^## /.test(l));
+  assert.equal(topLevel.length, 2, 'pruned to handoff_keep sections');
+  assert.ok(content.includes('second') && content.includes('third'), 'keeps the two most recent');
+  assert.ok(!content.includes('first'), 'oldest pruned');
 });
 
 // ═══════════════════════════════════════════════════════════
