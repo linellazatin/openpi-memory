@@ -6,7 +6,6 @@
 
 - Module-level injection state (`_injectedOnce`, `_turnCount`) is process-global. Safe for the standard single-user pi session; upgrade to a per-session Map if multi-session support is needed in future.
 - Manual edits to `MEMORY.md` or `memory.jsonc` made between user prompts are picked up on the next `before_agent_start` call (no cache to invalidate). This is by design.
-- The `/memory` browser's `[p]` hotkey tracks the focused item by mirroring `↑↓` key presses. If the SelectList's internal cursor drifts (e.g. via search filtering), `[p]` may act on a different entry than visually selected. Workaround: open the detail view with `enter` and use the action list there.
 
 ## FAQ (post-0.3.0)
 
