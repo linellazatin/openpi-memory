@@ -263,11 +263,13 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const trimmed = args.trim();
 
-      // Confirmation overlay for destructive remove actions
-      const confirmRemove = async (topic: string): Promise<boolean> => {
+      // Confirmation overlay for destructive remove actions.
+      // promptLabel is what the user reads; topic is what the mutation resolves against
+      // (the browser passes an exact filename so it can never hit a same-named sibling).
+      const confirmRemove = async (promptLabel: string, topic: string = promptLabel): Promise<boolean> => {
         const confirmed = await ctx.ui.custom<boolean>(
           (tui, theme, _kb, done) => {
-            const title  = new Text(theme.fg('warning', theme.bold(`Remove "${topic}"?`)), 1, 0);
+            const title  = new Text(theme.fg('warning', theme.bold(`Remove "${promptLabel}"?`)), 1, 0);
             const hint   = new Text(theme.fg('dim', 'The index entry is removed. The topic file is preserved on disk.'), 1, 0);
             const items: SelectItem[] = [
               { value: 'cancel',  label: 'Cancel' },
@@ -315,13 +317,15 @@ export default function (pi: ExtensionAPI) {
           }
 
           // ── list view ────────────────────────────────────────────────────
+          // value = filename: unique on disk, so an action can never resolve to a
+          // same-named sibling entry. index is derived, never mirrored.
           const listItems: SelectItem[] = entries.map(e => ({
-            value:       e.name,
+            value:       e.filename,
             label:       e.name,
             description: [e.date, e.pinned ? 'pinned' : '', e.stale ? 'stale' : ''].filter(Boolean).join(' · '),
           }));
 
-          const listResult = await ctx.ui.custom<{ type: 'enter' | 'pin' | 'remove'; name: string } | null>(
+          const listResult = await ctx.ui.custom<{ type: 'enter' | 'pin' | 'remove'; file: string } | null>(
             (tui, theme, _kb, done) => {
               const title  = new Text(theme.fg('accent', theme.bold(browserTitle)), 1, 0);
               const hint   = new Text(theme.fg('dim', '↑↓ navigate · enter view · [p]in/unpin · [r]emove · esc exit'), 1, 0);
@@ -333,23 +337,33 @@ export default function (pi: ExtensionAPI) {
                 noMatch:        (t) => theme.fg('warning', t),
               });
               list.setSelectedIndex(focusedIndex);
-              list.onSelect = (item) => done({ type: 'enter', name: item.value });
+              // SelectList owns navigation (including wrap). focusedIndex is only a
+              // restore position for the next loop iteration, synced FROM the list.
+              list.onSelectionChange = (item) => {
+                const idx = listItems.indexOf(item);
+                if (idx >= 0) focusedIndex = idx;
+              };
+              list.onSelect = (item) => done({ type: 'enter', file: item.value });
               list.onCancel = () => done(null);
               const widget = borderedBox((s: string) => theme.fg('accent', s), [title, list, hint]);
               return {
                 render:      (w: number) => widget.render(w),
                 invalidate:  ()         => widget.invalidate(),
                 handleInput: (data: string) => {
+                  // Resolve the target from the list's own selection at press time.
+                  // Reading entries[focusedIndex] here desynced from the visible
+                  // highlight whenever SelectList wrapped at either end.
+                  const current = () => list.getSelectedItem();
                   if (matchesKey(data, 'p')) {
-                    done({ type: 'pin', name: entries[focusedIndex]?.name ?? listItems[0].value });
+                    const item = current();
+                    if (item) done({ type: 'pin', file: item.value });
                     return;
                   }
                   if (matchesKey(data, 'r')) {
-                    done({ type: 'remove', name: entries[focusedIndex]?.name ?? listItems[0].value });
+                    const item = current();
+                    if (item) done({ type: 'remove', file: item.value });
                     return;
                   }
-                  if (matchesKey(data, 'up')   && focusedIndex > 0)                  focusedIndex--;
-                  else if (matchesKey(data, 'down') && focusedIndex < entries.length - 1) focusedIndex++;
                   list.handleInput(data);
                   tui.requestRender();
                 },
@@ -360,17 +374,18 @@ export default function (pi: ExtensionAPI) {
 
           if (!listResult) break; // Esc → exit
 
-          const entry = entries.find(e => e.name === listResult.name)!;
+          const entry = entries.find(e => e.filename === listResult.file);
+          if (!entry) break; // entry vanished from disk between render and action
 
           if (listResult.type === 'pin') {
-            const result = await executePinMemory({ topic: entry.name, pin: !entry.pinned });
+            const result = await executePinMemory({ topic: entry.filename, pin: !entry.pinned });
             ctx.ui.notify(result, 'info');
             continue;
           }
 
           if (listResult.type === 'remove') {
-            if (await confirmRemove(entry.name)) {
-              const result = await executeRemoveMemory({ topic: entry.name });
+            if (await confirmRemove(entry.name, entry.filename)) {
+              const result = await executeRemoveMemory({ topic: entry.filename });
               ctx.ui.notify(result, result.toLowerCase().includes('pinned') ? 'warning' : 'info');
             }
             continue;
@@ -426,11 +441,11 @@ export default function (pi: ExtensionAPI) {
           );
 
           if (detailResult === 'pin') {
-            const result = await executePinMemory({ topic: entry.name, pin: !entry.pinned });
+            const result = await executePinMemory({ topic: entry.filename, pin: !entry.pinned });
             ctx.ui.notify(result, 'info');
           } else if (detailResult === 'remove') {
-            if (await confirmRemove(entry.name)) {
-              const result = await executeRemoveMemory({ topic: entry.name });
+            if (await confirmRemove(entry.name, entry.filename)) {
+              const result = await executeRemoveMemory({ topic: entry.filename });
               ctx.ui.notify(result, result.toLowerCase().includes('pinned') ? 'warning' : 'info');
             }
           }

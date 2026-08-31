@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.5] - 2026-08-29
+
+### Fixed
+- Target entries by exact filename, preventing index mismatch - pin and remove operations now resolve via filenames rather than display names to prevent targeting duplicate or matching substrings.
+- If an entry is removed from disk while the overlay is open, pending pin/remove actions are safely dropped instead of throwing an error.
+
 ## [0.3.4] - 2026-08-29
 
 ### Changed

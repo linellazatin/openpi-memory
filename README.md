@@ -10,6 +10,10 @@ A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory)
 > Considering that vast majority of people who use **pi** literally creates their own extensions, I'm shooting my shot on this memory extension that I believe is good enough to be your *ultra-simplest* memory handler.
 
 >
+> ## v0.3.5 - browser selection fix
+> - the `/memory` browser now always acts on the highlighted entry, including after wrap-around navigation with `↑` from top
+> - pin/remove address an entry by its exact filename, so similarly-named entries can't be confused
+>
 > ## v0.3.4 - smarter consolidation
 > - automatic threshold consolidation now stores pi's compaction summary as the `HANDOFF.md` orientation entry — a coherent next-session handoff instead of a raw last-messages scrape
 > - consolidation persists durable facts driven by your `memory.jsonc` rules, keeping the memory index lean
@@ -131,7 +135,7 @@ Use these instead of asking the agent to edit files directly — they guarantee 
 
 ![ss-memory-list](docs/ss/ss-memory-list.png)
 
-- **List view** — all topics with date and pin/stale status. `↑↓` to navigate, `enter` to open a topic, `[p]` to pin/unpin the highlighted entry in-place, `[r]` to remove, `esc` to close. Selection position is preserved across pin/unpin, remove, and detail-view round-trips.
+- **List view** — all topics with date and pin/stale status. `↑↓` to navigate (the list wraps at both ends), `enter` to open a topic, `[p]` to pin/unpin the highlighted entry in-place, `[r]` to remove, `esc` to close. Actions always apply to the highlighted entry, and its position is preserved across pin/unpin, remove, and detail-view round-trips.
 - **Detail view** — Markdown-rendered topic body (capped at 6 lines; longer entries show a `… N more lines (filename.md)` indicator), metadata, and an action list: Pin/Unpin, Remove, Back. `[p]` and `[r]` hotkeys work here too. Remove asks for confirmation. Any action or `esc` returns to the list.
 
 ![ss-memory-detail](docs/ss/ss-memory-detail.png)
