@@ -156,11 +156,13 @@ If the injected `## Global Memory` block contains a truncation warning (`memory 
 ## TUI browser
 
 The `/memory` command provides an interactive TUI browser. From it you can:
-- Navigate entries with arrow keys
+- Navigate entries with arrow keys (the list wraps at both ends)
 - Press `enter` to view topic content (capped at 6 preview lines)
-- Press `[p]` to pin/unpin
-- Press `[r]` to remove (with confirmation)
+- Press `[p]` to pin/unpin the highlighted entry
+- Press `[r]` to remove the highlighted entry (with confirmation)
 - Press `esc` to exit
+
+Both hotkeys always act on the entry currently highlighted, and pin/remove resolve it by exact filename, so similarly-named entries are never confused.
 
 `/memory search <query>` opens the same browser pre-filtered to matching entries.
 
