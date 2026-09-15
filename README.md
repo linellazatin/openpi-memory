@@ -15,7 +15,7 @@ A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory)
 
 > <div align="center">
 >
-> ### An [upgraded, small, and deterministic SQLite core (FTS5/BM25) for coding-agent memory](https://github.com/linellazatin/nanomneme) in currently in development - which also has a **pi** adapter. Feel free to check it out, specially if you're already tired of flat-files as memory store (I won't stop you, though).
+> ### An [upgraded, small, and deterministic SQLite core (FTS5/BM25) for coding-agent memory](https://github.com/linellazatin/nanomneme) is currently in development - which also has a **pi** adapter. Feel free to check it out, specially if you're already tired of flat-files as memory store (I won't stop you, though).
 > #### Once nanomneme has been fully adapted, and tested end-to-end, there's a big possibility that we'll be migrating to nanomneme infrastructure for memory system.
 >
 > </div>
