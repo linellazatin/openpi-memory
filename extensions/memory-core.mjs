@@ -199,7 +199,7 @@ function mergeLocalIntoSharedDir(sharedDir) {
     const parsed = parseIndexLine(line);
     if (!parsed) continue; // headers/blanks — destination keeps its own structure
     const srcPath = path.join(LEGACY_MEMORY_DIR, parsed.filename);
-    if (!fs.existsSync(srcPath)) continue; // orphaned local entry — skip
+    if (!isRegularFile(srcPath)) continue; // orphaned or unsafe local entry — skip
 
     const destName = resolveDestName(srcPath, sharedDir, parsed.filename, sharedFilesOnDisk);
     if (destName === null) continue; // identical content already present — no-op
@@ -237,8 +237,19 @@ function resolveDestName(srcPath, sharedDir, filename, sharedFilesOnDisk) {
   return candidate;
 }
 
+function isSafeTopicFilename(filename) {
+  const lower = typeof filename === 'string' ? filename.toLowerCase() : '';
+  return lower.endsWith('.md') && lower !== 'memory.md' && !filename.startsWith('.') &&
+    !/[\\/\[\]\(\)]/.test(filename) && !filename.includes('..');
+}
+
+function isRegularFile(filePath) {
+  try { return fs.lstatSync(filePath).isFile(); } catch { return false; }
+}
+
 function filesEqual(pathA, pathB) {
-  return fs.readFileSync(pathA, 'utf8') === fs.readFileSync(pathB, 'utf8');
+  return isRegularFile(pathA) && isRegularFile(pathB) &&
+    fs.readFileSync(pathA, 'utf8') === fs.readFileSync(pathB, 'utf8');
 }
 
 // Test-only: reset the carry-over guard to simulate a fresh process start.
@@ -481,6 +492,10 @@ export function readMemoryIndex(maxLines) {
       atomicWriteFileSync(memoryIndex, INITIAL_MEMORY);
       return INITIAL_MEMORY;
     }
+    if (!isRegularFile(memoryIndex)) {
+      logDiag('refusing to read unsafe MEMORY.md', 'not a regular file');
+      return null;
+    }
     const { text, truncated: oversized } = readTextPrefixSync(memoryIndex, MAX_BYTES);
     const lines = text.split('\n');
     if (oversized) {
@@ -535,7 +550,7 @@ export function parseIndexLine(line) {
   // produce these characters) — this guards against a corrupted or maliciously co-written
   // index file (a real, if narrow, risk once shared_dir puts another tool in the trust
   // boundary) flowing into any path.join(memoryDir, filename) call downstream.
-  if (/[\\/]/.test(filename) || filename.includes('..')) return null;
+  if (!isSafeTopicFilename(filename)) return null;
   return {
     prefix:   match[1],
     name:     match[2],
@@ -652,7 +667,7 @@ export function maintainIndex(lines, config, memoryDir = getMemoryDir()) {
     const parsed = parseIndexLine(lines[i]);
     if (!parsed) continue;
     const { filename } = parsed;
-    if (!fs.existsSync(path.join(memoryDir, filename))) continue; // orphan
+    if (!isRegularFile(path.join(memoryDir, filename))) continue; // orphan or unsafe file
     const thisDate = (parsed.rest.match(ISO_DATE_RE) ?? [])[1] ?? '';
     const existing = best.get(filename);
     if (!existing) {
@@ -750,9 +765,10 @@ export function searchMemory(query) {
   const memoryDir = getMemoryDir();
   if (!fs.existsSync(memoryDir)) return results;
   for (const file of fs.readdirSync(memoryDir)) {
-    if (!file.endsWith('.md')) continue;
+    if (!isSafeTopicFilename(file)) continue;
     if (SKIP.has(file) || indexedNames.has(file)) continue;
     const filePath = path.join(memoryDir, file);
+    if (!isRegularFile(filePath)) continue;
     const { text } = readTextPrefixSync(filePath, MAX_BYTES);
     const lines = text.split('\n');
     for (const line of lines) {
@@ -819,6 +835,7 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
   if (toSlug(topic) === RESERVED_TOPIC_SLUG) {
     return `Reserved topic: "${RESERVED_TOPIC_SLUG}" has been retired. Persist durable facts as their own topics; automatic session orientation is managed in HANDOFF.md.`;
   }
+  if (toSlug(topic) === 'memory') return 'Invalid topic: "MEMORY.md" is reserved for the memory index.';
 
   // backwards compat: overwrite: true maps to mode: 'replace'
   const replace = mode === 'replace' || overwrite === true;
@@ -842,6 +859,8 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
       }
     }
     const topicPath = path.join(memoryDir, filename);
+    if (fs.existsSync(topicPath) && !isRegularFile(topicPath))
+      return `Invalid topic: "${filename}" is not a regular file.`;
 
     let isNew = false;
     const dt = nowIso();
@@ -1077,8 +1096,9 @@ export function readIndexEntries() {
  * Read a topic file's body (frontmatter stripped) for display.
  */
 export function readTopicContent(filename) {
+  if (!isSafeTopicFilename(filename)) return '_(file not found)_';
   const filePath = path.join(getMemoryDir(), filename);
-  if (!fs.existsSync(filePath)) return '_(file not found)_';
+  if (!isRegularFile(filePath)) return '_(file not found)_';
   const { text, truncated } = readTextPrefixSync(filePath, MAX_BYTES);
   const fmMatch = text.match(/^---\n[\s\S]*?\n---\n/);
   const body = fmMatch ? text.slice(fmMatch[0].length).trimStart() : text;

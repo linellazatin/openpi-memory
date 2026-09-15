@@ -1299,6 +1299,48 @@ await test('replaceLatestHandoff: prunes to handoff_keep sections across repeate
 });
 
 // ═══════════════════════════════════════════════════════════
+// 17. safe flat-file candidates
+// ═══════════════════════════════════════════════════════════
+
+console.log('\n--- 17. safe flat-file candidates ---');
+
+await test('parseIndexLine: rejects hidden and reserved topic filenames', async () => {
+  assert.equal(parseIndexLine('- [Hidden](.hidden.md) 2026-01-01 -- x'), null);
+  assert.equal(parseIndexLine('- [Index](MEMORY.md) 2026-01-01 -- x'), null);
+  assert.equal(parseIndexLine('- [Index](memory.md) 2026-01-01 -- x'), null);
+});
+
+await test('write_memory: rejects MEMORY because it is the index', async () => {
+  writeRules('{ "shared_dir": false }');
+  const index = fs.readFileSync(getMemoryIndex(), 'utf8');
+  try {
+    const result = await executeWriteMemory({ topic: 'MEMORY', content: 'must not overwrite index', summary: 'index' });
+    assert.ok(result.startsWith('Invalid topic:'), 'reserved index topic rejected');
+  } finally {
+    fs.writeFileSync(getMemoryIndex(), index, 'utf8');
+  }
+});
+
+await test('topic reads and search ignore symbolic links', async () => {
+  writeRules('{ "shared_dir": false }');
+  const outside = path.join(TMP, 'outside.md');
+  const linked = path.join(getMemoryDir(), 'linked.md');
+  fs.writeFileSync(outside, 'outside_only_token', 'utf8');
+  try {
+    fs.symlinkSync(outside, linked);
+  } catch (err) {
+    if (err.code === 'EPERM') return;
+    throw err;
+  }
+  try {
+    assert.ok(readTopicContent('linked.md').includes('not found'), 'linked topic is not read');
+    assert.ok(!searchMemory('outside_only_token').some(r => r.filename === 'linked.md'), 'linked topic is not searched');
+  } finally {
+    fs.unlinkSync(linked);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
 // Results
 // ═══════════════════════════════════════════════════════════
 
