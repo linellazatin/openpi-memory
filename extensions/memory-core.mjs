@@ -51,6 +51,10 @@ export const DEFAULT_AUTO_RESUME_AFTER_THRESHOLD = false;
 export const DEFAULT_CONSOLIDATE_ON_COMPACT = false;
 export const DEFAULT_SHARED_DIR = false;
 const LOCK_STALE_MS = 10 * 1000;
+const LOCK_STALE_HARD_MS = 60 * 1000;
+const LOCK_SHARED_TIMEOUT_MS = 2 * 1000;
+const LOCK_RETRY_DELAY_MS = 1000;
+const LOCK_BUSY_MESSAGE = 'Error: memory store is busy (another tool or process holds the lock) — please retry in a moment.';
 let _carryOverChecked = false; // guard: run carry-over at most once per process
 const CARRY_OVER_SENTINEL = path.join(LEGACY_MEMORY_DIR, '.shared-dir-migrated');
 
@@ -167,15 +171,20 @@ export const INITIAL_RULES_JSONC = `{
  */
 function maybeCarryOverLocalMemory() {
   if (_carryOverChecked) return;
-  _carryOverChecked = true;
-  if (fs.existsSync(CARRY_OVER_SENTINEL)) return; // already merged in a prior process run
-  if (!fs.existsSync(path.join(LEGACY_MEMORY_DIR, 'MEMORY.md'))) return; // nothing local to carry over
+  if (fs.existsSync(CARRY_OVER_SENTINEL)) { _carryOverChecked = true; return; }
+  if (!fs.existsSync(path.join(LEGACY_MEMORY_DIR, 'MEMORY.md'))) { _carryOverChecked = true; return; }
   try {
     fs.mkdirSync(SHARED_MEMORY_DIR, { recursive: true });
-    // ponytail: no lock here — carry-over is one-time (_carryOverChecked gates it) and
-    // additive-only; any race-condition duplicates are cleaned by maintainIndex on next write.
-    mergeLocalIntoSharedDir(SHARED_MEMORY_DIR);
-    fs.writeFileSync(CARRY_OVER_SENTINEL, ''); // mark complete so future process starts skip the full pass
+    const lockPath = path.join(SHARED_MEMORY_DIR, '.lock');
+    const token = tryAcquireLock(lockPath);
+    if (!token) return; // another shared writer owns the store; retry on a later call
+    try {
+      mergeLocalIntoSharedDir(SHARED_MEMORY_DIR);
+      fs.writeFileSync(CARRY_OVER_SENTINEL, '');
+      _carryOverChecked = true;
+    } finally {
+      releaseLock(lockPath, token);
+    }
   } catch (err) {
     // best-effort — carry-over failure must never break normal operation, but log the trail
     logDiag('shared_dir carry-over failed', err);
@@ -786,42 +795,69 @@ export function searchMemory(query) {
 // --- Concurrency ---
 
 /**
- * Cross-process advisory file lock. A single in-process mutex is not enough once the
- * memory dir can be shared with other tools/processes (shared_dir: true). Acquires by
- * atomically creating a `.lock` file (fails if it already exists); a lock older than
- * LOCK_STALE_MS is assumed abandoned by a crashed process and is stolen.
+ * Cross-process advisory lock shared with openclaude-memory. The first tab-separated
+ * field is the PID it uses for liveness checks; the full token prevents a former owner
+ * from deleting a lock it no longer owns.
  */
-async function acquireLock(lockPath) {
-  for (;;) {
-    try {
-      fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
-      return;
-    } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
-      try {
-        const stat = fs.statSync(lockPath);
-        if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-          try { fs.unlinkSync(lockPath); } catch {}
-          continue;
-        }
-      } catch {
-        continue; // lock file vanished between our check and stat — retry immediately
-      }
-      await new Promise(r => setTimeout(r, 20));
-    }
+function lockHolderAlive(lockPath, age) {
+  let pid;
+  try { pid = Number.parseInt(fs.readFileSync(lockPath, 'utf8').trim().split('\t')[0], 10); }
+  catch { pid = NaN; }
+  if (!Number.isInteger(pid)) return age <= LOCK_STALE_HARD_MS;
+  try { process.kill(pid, 0); return true; }
+  catch (err) { return err.code !== 'ESRCH'; }
+}
+
+function tryAcquireLock(lockPath) {
+  const token = `${process.pid}\t${Date.now()}\t${Math.random().toString(36).slice(2)}`;
+  try {
+    fs.writeFileSync(lockPath, token, { flag: 'wx' });
+    return token;
+  } catch (err) {
+    if (err.code !== 'EEXIST') throw err;
   }
+  try {
+    const age = Date.now() - fs.statSync(lockPath).mtimeMs;
+    if (age > LOCK_STALE_MS && !lockHolderAlive(lockPath, age)) {
+      try { fs.unlinkSync(lockPath); } catch {}
+      try {
+        fs.writeFileSync(lockPath, token, { flag: 'wx' });
+        return token;
+      } catch (err) {
+        if (err.code !== 'EEXIST') throw err;
+      }
+    }
+  } catch { /* lock changed while inspected; caller retries */ }
+  return null;
+}
+
+function releaseLock(lockPath, token) {
+  try {
+    if (fs.readFileSync(lockPath, 'utf8') === token) fs.unlinkSync(lockPath);
+  } catch { /* lock was already released or replaced */ }
 }
 
 async function withLock(fn) {
+  const { sharedDir } = parseRules();
   const memoryDir = getMemoryDir();
   fs.mkdirSync(memoryDir, { recursive: true });
   const lockPath = path.join(memoryDir, '.lock');
-  await acquireLock(lockPath);
-  try {
-    return await fn();
-  } finally {
-    try { fs.unlinkSync(lockPath); } catch {}
-  }
+  const deadline = sharedDir ? Date.now() + LOCK_SHARED_TIMEOUT_MS : Infinity;
+  let token;
+  do {
+    token = tryAcquireLock(lockPath);
+    if (token) {
+      try { return await fn(); }
+      finally { releaseLock(lockPath, token); }
+    }
+    await new Promise(r => setTimeout(r, 20));
+  } while (Date.now() < deadline);
+
+  await new Promise(r => setTimeout(r, LOCK_RETRY_DELAY_MS));
+  const retryToken = tryAcquireLock(lockPath);
+  if (!retryToken) return null;
+  try { return await fn(); }
+  finally { releaseLock(lockPath, retryToken); }
 }
 
 // --- Tool execute functions ---
@@ -839,7 +875,7 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
 
   // backwards compat: overwrite: true maps to mode: 'replace'
   const replace = mode === 'replace' || overwrite === true;
-  return withLock(() => {
+  const result = await withLock(() => {
     const memoryDir = getMemoryDir();
     const memoryIndex = path.join(memoryDir, 'MEMORY.md');
     fs.mkdirSync(memoryDir, { recursive: true });
@@ -889,10 +925,11 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
 
     return `${isNew ? 'Created' : 'Updated'} memory topic "${topic}" (${filename}).`;
   });
+  return result ?? LOCK_BUSY_MESSAGE;
 }
 
 export async function executeRemoveMemory({ topic }) {
-  return withLock(() => {
+  const result = await withLock(() => {
     const memoryIndex = getMemoryIndex();
     if (!fs.existsSync(memoryIndex)) return 'No memory index found.';
 
@@ -911,10 +948,11 @@ export async function executeRemoveMemory({ topic }) {
     atomicWriteFileSync(memoryIndex, lines.join('\n'));
     return `Removed "${found.parsed.name}" from the index. Topic file is preserved on disk.`;
   });
+  return result ?? LOCK_BUSY_MESSAGE;
 }
 
 export async function executePinMemory({ topic, pin }) {
-  return withLock(() => {
+  const result = await withLock(() => {
     const memoryIndex = getMemoryIndex();
     if (!fs.existsSync(memoryIndex)) return 'No memory index found.';
 
@@ -944,6 +982,7 @@ export async function executePinMemory({ topic, pin }) {
     atomicWriteFileSync(memoryIndex, lines.join('\n'));
     return `${pin ? 'Pinned' : 'Unpinned'} "${parsed.name}".\nBefore: ${before}\n After: ${afterLine}`;
   });
+  return result ?? LOCK_BUSY_MESSAGE;
 }
 
 // --- Compaction handoff ---

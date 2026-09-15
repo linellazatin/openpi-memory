@@ -1341,6 +1341,47 @@ await test('topic reads and search ignore symbolic links', async () => {
 });
 
 // ═══════════════════════════════════════════════════════════
+// 18. strict shared locking
+// ═══════════════════════════════════════════════════════════
+
+console.log('\n--- 18. strict shared locking ---');
+
+await test('shared write refuses an old lock held by a live process', async () => {
+  writeRules('{ "shared_dir": true }');
+  getMemoryDir(); // complete carry-over before introducing contention
+  const lockPath = path.join(SHARED_DIR_PATH, '.lock');
+  fs.writeFileSync(lockPath, `${process.pid}\t${Date.now()}`, 'utf8');
+  const old = Date.now() / 1000 - 60;
+  fs.utimesSync(lockPath, old, old);
+  try {
+    const result = await executeWriteMemory({ topic: 'Live Lock', content: 'x', summary: 'x' });
+    assert.ok(result.includes('busy'), 'live shared lock is not stolen');
+  } finally {
+    try { fs.unlinkSync(lockPath); } catch {}
+  }
+});
+
+await test('shared carry-over does not merge while a live lock is held', async () => {
+  writeRules('{ "shared_dir": false }');
+  await executeWriteMemory({ topic: 'Locked Carryover', content: 'local', summary: 'local' });
+  fs.rmSync(SHARED_DIR_PATH, { recursive: true, force: true });
+  fs.mkdirSync(SHARED_DIR_PATH, { recursive: true });
+  _resetCarryOver();
+  const lockPath = path.join(SHARED_DIR_PATH, '.lock');
+  fs.writeFileSync(lockPath, `${process.pid}\t${Date.now()}`, 'utf8');
+  const old = Date.now() / 1000 - 60;
+  fs.utimesSync(lockPath, old, old);
+  try {
+    writeRules('{ "shared_dir": true }');
+    getMemoryDir();
+    assert.ok(!fs.existsSync(path.join(LEGACY_DIR_PATH, '.shared-dir-migrated')), 'failed carry-over has no sentinel');
+    assert.ok(!fs.existsSync(path.join(SHARED_DIR_PATH, 'locked-carryover.md')), 'locked carry-over does not copy topics');
+  } finally {
+    try { fs.unlinkSync(lockPath); } catch {}
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
 // Results
 // ═══════════════════════════════════════════════════════════
 
