@@ -1382,6 +1382,35 @@ await test('shared carry-over does not merge while a live lock is held', async (
 });
 
 // ═══════════════════════════════════════════════════════════
+// 19. shared removal tombstones
+// ═══════════════════════════════════════════════════════════
+
+console.log('\n--- 19. shared removal tombstones ---');
+
+await test('shared removal writes and re-storing clears openclaude tombstones', async () => {
+  writeRules('{ "shared_dir": true }');
+  getMemoryDir();
+  const removed = path.join(SHARED_DIR_PATH, '.ocl-removed');
+  fs.rmSync(removed, { force: true });
+  await executeWriteMemory({ topic: 'Shared Removed', content: 'keep file', summary: 'shared' });
+  const result = await executeRemoveMemory({ topic: 'Shared Removed' });
+  assert.ok(result.startsWith('Removed'), 'shared entry removed from index');
+  assert.ok(fs.readFileSync(removed, 'utf8').split('\n').includes('shared-removed.md'), 'shared removal tombstoned');
+  assert.ok(fs.existsSync(path.join(SHARED_DIR_PATH, 'shared-removed.md')), 'topic file preserved');
+  await executeWriteMemory({ topic: 'Shared Removed', content: 'restore', summary: 'shared' });
+  assert.ok(!fs.readFileSync(removed, 'utf8').split('\n').includes('shared-removed.md'), 're-store clears tombstone');
+});
+
+await test('local removal does not create openclaude tombstones', async () => {
+  writeRules('{ "shared_dir": false }');
+  const removed = path.join(LEGACY_DIR_PATH, '.ocl-removed');
+  fs.rmSync(removed, { force: true });
+  await executeWriteMemory({ topic: 'Local Removed', content: 'keep file', summary: 'local' });
+  await executeRemoveMemory({ topic: 'Local Removed' });
+  assert.ok(!fs.existsSync(removed), 'local removal does not use shared metadata');
+});
+
+// ═══════════════════════════════════════════════════════════
 // Results
 // ═══════════════════════════════════════════════════════════
 

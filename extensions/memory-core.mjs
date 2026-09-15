@@ -298,6 +298,30 @@ function atomicWriteFileSync(filePath, content) {
   fs.renameSync(tmpPath, filePath);
 }
 
+function removedListPath(memoryDir) {
+  return path.join(memoryDir, '.ocl-removed');
+}
+
+function readRemovedList(memoryDir) {
+  try {
+    return new Set(fs.readFileSync(removedListPath(memoryDir), 'utf8').split('\n')
+      .filter(isSafeTopicFilename));
+  } catch { return new Set(); }
+}
+
+function addToRemovedList(memoryDir, filename) {
+  const removed = readRemovedList(memoryDir);
+  if (removed.has(filename)) return;
+  removed.add(filename);
+  atomicWriteFileSync(removedListPath(memoryDir), [...removed].join('\n') + '\n');
+}
+
+function removeFromRemovedList(memoryDir, filename) {
+  const removed = readRemovedList(memoryDir);
+  if (!removed.delete(filename)) return;
+  atomicWriteFileSync(removedListPath(memoryDir), removed.size ? [...removed].join('\n') + '\n' : '');
+}
+
 // Read no more than maxBytes, checking size before allocating file contents. The final UTF-8
 // character may be incomplete when truncating; that harmless replacement character is preferable
 // to synchronously loading an unbounded shared-memory file into pi's process.
@@ -922,6 +946,7 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
     lines = upsertIndexLine(lines, filename, topic, summary, pin);
     lines = maintainIndex(lines, parseRules(), memoryDir);
     atomicWriteFileSync(memoryIndex, lines.join('\n'));
+    if (memoryDir === SHARED_MEMORY_DIR) removeFromRemovedList(memoryDir, filename);
 
     return `${isNew ? 'Created' : 'Updated'} memory topic "${topic}" (${filename}).`;
   });
@@ -946,6 +971,7 @@ export async function executeRemoveMemory({ topic }) {
     lines.splice(found.idx, 1);
     lines = maintainIndex(lines, parseRules());
     atomicWriteFileSync(memoryIndex, lines.join('\n'));
+    if (getMemoryDir() === SHARED_MEMORY_DIR) addToRemovedList(SHARED_MEMORY_DIR, found.parsed.filename);
     return `Removed "${found.parsed.name}" from the index. Topic file is preserved on disk.`;
   });
   return result ?? LOCK_BUSY_MESSAGE;
