@@ -1,14 +1,31 @@
 # openpi-memory
 
-[![npm version](https://img.shields.io/npm/v/@openlines/openpi-memory)](https://www.npmjs.com/package/@openlines/openpi-memory)
+<div align="center">
+
+[![opp version](https://img.shields.io/npm/v/@openlines/openpi-memory?color=red)](https://www.npmjs.com/package/@openlines/openpi-memory)
+[![opp total](https://img.shields.io/npm/dt/@openlines/openpi-memory?color=red)](https://www.npmjs.com/package/@openlines/openpi-memory)
+[![opp downloads](https://img.shields.io/npm/dm/@openlines/openpi-memory?color=red)](https://www.npmjs.com/package/@openlines/openpi-memory)
 [![license](https://img.shields.io/npm/l/@openlines/openpi-memory)](./LICENSE)
+
+</div>
 
 Global persistent memory for [pi coding agent](https://pi.dev) sessions. **Open. Configurable.** Inspired by Claude Code's auto-memory — your agent remembers what it learns, across every session, globally.
 
 A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory) to pi's extension API.
 
+> <div align="center">
+>
+> ### An [upgraded, small, and deterministic SQLite core (FTS5/BM25) for coding-agent memory](https://github.com/linellazatin/nanomneme) in currently in development - which also has a **pi** adapter. Feel free to check it out, specially if you're already tired of flat-files as memory store (I won't stop you, though).
+> #### Once nanomneme has been fully adapted, and tested end-to-end, there's a big possibility that we'll be migrating to nanomneme infrastructure for memory system.
+>
+> </div>
+
 > Considering that vast majority of people who use **pi** literally creates their own extensions, I'm shooting my shot on this memory extension that I believe is good enough to be your *ultra-simplest* memory handler.
 
+>
+> ## v0.3.6 - shared-store hardening
+> - `shared_dir` now follows current openclaude-memory locking and removal conventions, while remaining a same-user collaboration feature
+> - unsafe files, index collisions, and unbounded interactive index reads are rejected or bounded
 >
 > ## v0.3.5 - browser selection fix
 > - the `/memory` browser now always acts on the highlighted entry, including after wrap-around navigation with `↑` from top
@@ -17,18 +34,6 @@ A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory)
 > ## v0.3.4 - smarter consolidation
 > - automatic threshold consolidation now stores pi's compaction summary as the `HANDOFF.md` orientation entry — a coherent next-session handoff instead of a raw last-messages scrape
 > - consolidation persists durable facts driven by your `memory.jsonc` rules, keeping the memory index lean
->
-> ## v0.3.3 - input + memory-read hardening
-> - unsafe memory topic metadata is rejected; summaries stay one-line; big memory files are bounded before pi loads them
-> - completed recaps no longer get a generic `Continue.` nudge just because they say `then`, `should`, or `next`
->
-> ## v0.3.2 - bug fixes + hardening
-> - fixed `compaction_end` never firing on the pi runtime — `auto_resume_after_threshold_compaction`, `consolidate_on_compact`, and handoff-aware resume were silently dead; moved the logic to `session_compact` which actually works (and it's now unit-tested)
-> - fixed a JSONC config bug where `//` inside a value (e.g. a URL) silently reset your whole config to defaults
-> - broken config / unreadable index / failed shared-dir carry-over now log a `[openpi-memory]` line instead of failing silently
-> - `remove`/`pin` on an ambiguous topic now refuses and lists candidates instead of guessing; an exact name match always wins
-> - added static type-checking (`tsc`) + CI now actually runs tests/typecheck on every push and before publish (none of this ran in CI before)
-> - smaller fixes: path traversal guard on `MEMORY.md` filenames, `remove`/`pin` now also run index maintenance, stale `overwrite` prompt wording corrected, empty-handoff now signalled
 >
 > see [CHANGELOG](CHANGELOG.md) for more details
 

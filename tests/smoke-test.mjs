@@ -1299,6 +1299,164 @@ await test('replaceLatestHandoff: prunes to handoff_keep sections across repeate
 });
 
 // ═══════════════════════════════════════════════════════════
+// 17. safe flat-file candidates
+// ═══════════════════════════════════════════════════════════
+
+console.log('\n--- 17. safe flat-file candidates ---');
+
+await test('parseIndexLine: rejects hidden and reserved topic filenames', async () => {
+  assert.equal(parseIndexLine('- [Hidden](.hidden.md) 2026-01-01 -- x'), null);
+  assert.equal(parseIndexLine('- [Index](MEMORY.md) 2026-01-01 -- x'), null);
+  assert.equal(parseIndexLine('- [Index](memory.md) 2026-01-01 -- x'), null);
+});
+
+await test('write_memory: rejects MEMORY because it is the index', async () => {
+  writeRules('{ "shared_dir": false }');
+  const index = fs.readFileSync(getMemoryIndex(), 'utf8');
+  try {
+    const result = await executeWriteMemory({ topic: 'MEMORY', content: 'must not overwrite index', summary: 'index' });
+    assert.ok(result.startsWith('Invalid topic:'), 'reserved index topic rejected');
+  } finally {
+    fs.writeFileSync(getMemoryIndex(), index, 'utf8');
+  }
+});
+
+await test('topic reads and search ignore symbolic links', async () => {
+  writeRules('{ "shared_dir": false }');
+  const outside = path.join(TMP, 'outside.md');
+  const linked = path.join(getMemoryDir(), 'linked.md');
+  fs.writeFileSync(outside, 'outside_only_token', 'utf8');
+  try {
+    fs.symlinkSync(outside, linked);
+  } catch (err) {
+    if (err.code === 'EPERM') return;
+    throw err;
+  }
+  try {
+    assert.ok(readTopicContent('linked.md').includes('not found'), 'linked topic is not read');
+    assert.ok(!searchMemory('outside_only_token').some(r => r.filename === 'linked.md'), 'linked topic is not searched');
+  } finally {
+    fs.unlinkSync(linked);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// 18. strict shared locking
+// ═══════════════════════════════════════════════════════════
+
+console.log('\n--- 18. strict shared locking ---');
+
+await test('shared write refuses an old lock held by a live process', async () => {
+  writeRules('{ "shared_dir": true }');
+  getMemoryDir(); // complete carry-over before introducing contention
+  const lockPath = path.join(SHARED_DIR_PATH, '.lock');
+  fs.writeFileSync(lockPath, `${process.pid}\t${Date.now()}`, 'utf8');
+  const old = Date.now() / 1000 - 60;
+  fs.utimesSync(lockPath, old, old);
+  try {
+    const result = await executeWriteMemory({ topic: 'Live Lock', content: 'x', summary: 'x' });
+    assert.ok(result.includes('busy'), 'live shared lock is not stolen');
+  } finally {
+    try { fs.unlinkSync(lockPath); } catch {}
+  }
+});
+
+await test('shared carry-over does not merge while a live lock is held', async () => {
+  writeRules('{ "shared_dir": false }');
+  await executeWriteMemory({ topic: 'Locked Carryover', content: 'local', summary: 'local' });
+  fs.rmSync(SHARED_DIR_PATH, { recursive: true, force: true });
+  fs.mkdirSync(SHARED_DIR_PATH, { recursive: true });
+  _resetCarryOver();
+  const lockPath = path.join(SHARED_DIR_PATH, '.lock');
+  fs.writeFileSync(lockPath, `${process.pid}\t${Date.now()}`, 'utf8');
+  const old = Date.now() / 1000 - 60;
+  fs.utimesSync(lockPath, old, old);
+  try {
+    writeRules('{ "shared_dir": true }');
+    getMemoryDir();
+    assert.ok(!fs.existsSync(path.join(LEGACY_DIR_PATH, '.shared-dir-migrated')), 'failed carry-over has no sentinel');
+    assert.ok(!fs.existsSync(path.join(SHARED_DIR_PATH, 'locked-carryover.md')), 'locked carry-over does not copy topics');
+  } finally {
+    try { fs.unlinkSync(lockPath); } catch {}
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// 19. shared removal tombstones
+// ═══════════════════════════════════════════════════════════
+
+console.log('\n--- 19. shared removal tombstones ---');
+
+await test('shared removal writes and re-storing clears openclaude tombstones', async () => {
+  writeRules('{ "shared_dir": true }');
+  getMemoryDir();
+  const removed = path.join(SHARED_DIR_PATH, '.ocl-removed');
+  fs.rmSync(removed, { force: true });
+  await executeWriteMemory({ topic: 'Shared Removed', content: 'keep file', summary: 'shared' });
+  const result = await executeRemoveMemory({ topic: 'Shared Removed' });
+  assert.ok(result.startsWith('Removed'), 'shared entry removed from index');
+  assert.ok(fs.readFileSync(removed, 'utf8').split('\n').includes('shared-removed.md'), 'shared removal tombstoned');
+  assert.ok(fs.existsSync(path.join(SHARED_DIR_PATH, 'shared-removed.md')), 'topic file preserved');
+  await executeWriteMemory({ topic: 'Shared Removed', content: 'restore', summary: 'shared' });
+  assert.ok(!fs.readFileSync(removed, 'utf8').split('\n').includes('shared-removed.md'), 're-store clears tombstone');
+});
+
+await test('local removal does not create openclaude tombstones', async () => {
+  writeRules('{ "shared_dir": false }');
+  const removed = path.join(LEGACY_DIR_PATH, '.ocl-removed');
+  fs.rmSync(removed, { force: true });
+  await executeWriteMemory({ topic: 'Local Removed', content: 'keep file', summary: 'local' });
+  await executeRemoveMemory({ topic: 'Local Removed' });
+  assert.ok(!fs.existsSync(removed), 'local removal does not use shared metadata');
+});
+
+// ═══════════════════════════════════════════════════════════
+// 20. flat-file index integrity
+// ═══════════════════════════════════════════════════════════
+
+console.log('\n--- 20. flat-file index integrity ---');
+
+await test('slug collisions allocate a distinct topic file', async () => {
+  writeRules('{ "shared_dir": false }');
+  await executeWriteMemory({ topic: 'Slug Collision!', content: 'first', summary: 'first' });
+  await executeWriteMemory({ topic: 'Slug Collision', content: 'second', summary: 'second' });
+  const entries = readIndexEntries();
+  assert.ok(entries.some(e => e.filename === 'slug-collision.md' && e.name === 'Slug Collision!'));
+  assert.ok(entries.some(e => e.filename === 'slug-collision-2.md' && e.name === 'Slug Collision'));
+  assert.ok(fs.readFileSync(path.join(LEGACY_DIR_PATH, 'slug-collision.md'), 'utf8').includes('first'));
+  assert.ok(fs.readFileSync(path.join(LEGACY_DIR_PATH, 'slug-collision-2.md'), 'utf8').includes('second'));
+});
+
+await test('carry-over indexes an identical shared topic missing from its index', async () => {
+  writeRules('{ "shared_dir": false }');
+  const localEntries = readIndexEntries();
+  const candidate = localEntries.find(e => e.filename !== 'MEMORY.md');
+  const localFile = path.join(LEGACY_DIR_PATH, candidate.filename);
+  fs.rmSync(SHARED_DIR_PATH, { recursive: true, force: true });
+  fs.mkdirSync(SHARED_DIR_PATH, { recursive: true });
+  fs.writeFileSync(path.join(SHARED_DIR_PATH, 'MEMORY.md'), '# Memory Index\n\n', 'utf8');
+  fs.copyFileSync(localFile, path.join(SHARED_DIR_PATH, candidate.filename));
+  _resetCarryOver();
+  writeRules('{ "shared_dir": true }');
+  getMemoryDir();
+  const lines = fs.readFileSync(path.join(SHARED_DIR_PATH, 'MEMORY.md'), 'utf8').split('\n');
+  assert.equal(lines.map(parseIndexLine).filter(Boolean).filter(e => e.filename === candidate.filename).length, 1);
+});
+
+await test('index browser and search ignore entries beyond the byte limit', async () => {
+  writeRules('{ "shared_dir": false }');
+  const index = fs.readFileSync(getMemoryIndex(), 'utf8');
+  const late = '- [Late Index](late-index.md) 2026-01-01 -- late_index_token\n';
+  fs.writeFileSync(getMemoryIndex(), '# Memory Index\n\n' + 'x'.repeat(MAX_BYTES + 100) + '\n' + late, 'utf8');
+  try {
+    assert.ok(!readIndexEntries().some(e => e.filename === 'late-index.md'), 'browser index is bounded');
+    assert.ok(!searchMemory('late_index_token').some(e => e.filename === 'late-index.md'), 'index search is bounded');
+  } finally {
+    fs.writeFileSync(getMemoryIndex(), index, 'utf8');
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
 // Results
 // ═══════════════════════════════════════════════════════════
 

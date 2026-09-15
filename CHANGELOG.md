@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.6] - 2026-09-15
+
+### Fixed
+- `shared_dir` now uses PID-aware strict locks, including one-time carry-over; a busy co-tenant is never overwritten.
+- Shared removals now use openclaude-memory's `.ocl-removed` convention, so its repair flow does not resurrect intentionally removed topics.
+- Shared/manual files must be regular safe Markdown files; symlinks, hidden/internal files, and `MEMORY.md` as a topic are rejected.
+- Slug collisions receive numeric topic filenames, carry-over restores missing index lines for identical files, and browser/search index reads are bounded to 50 KiB.
+
 ## [0.3.5] - 2026-08-29
 
 ### Fixed

@@ -51,6 +51,10 @@ export const DEFAULT_AUTO_RESUME_AFTER_THRESHOLD = false;
 export const DEFAULT_CONSOLIDATE_ON_COMPACT = false;
 export const DEFAULT_SHARED_DIR = false;
 const LOCK_STALE_MS = 10 * 1000;
+const LOCK_STALE_HARD_MS = 60 * 1000;
+const LOCK_SHARED_TIMEOUT_MS = 2 * 1000;
+const LOCK_RETRY_DELAY_MS = 1000;
+const LOCK_BUSY_MESSAGE = 'Error: memory store is busy (another tool or process holds the lock) — please retry in a moment.';
 let _carryOverChecked = false; // guard: run carry-over at most once per process
 const CARRY_OVER_SENTINEL = path.join(LEGACY_MEMORY_DIR, '.shared-dir-migrated');
 
@@ -167,15 +171,20 @@ export const INITIAL_RULES_JSONC = `{
  */
 function maybeCarryOverLocalMemory() {
   if (_carryOverChecked) return;
-  _carryOverChecked = true;
-  if (fs.existsSync(CARRY_OVER_SENTINEL)) return; // already merged in a prior process run
-  if (!fs.existsSync(path.join(LEGACY_MEMORY_DIR, 'MEMORY.md'))) return; // nothing local to carry over
+  if (fs.existsSync(CARRY_OVER_SENTINEL)) { _carryOverChecked = true; return; }
+  if (!fs.existsSync(path.join(LEGACY_MEMORY_DIR, 'MEMORY.md'))) { _carryOverChecked = true; return; }
   try {
     fs.mkdirSync(SHARED_MEMORY_DIR, { recursive: true });
-    // ponytail: no lock here — carry-over is one-time (_carryOverChecked gates it) and
-    // additive-only; any race-condition duplicates are cleaned by maintainIndex on next write.
-    mergeLocalIntoSharedDir(SHARED_MEMORY_DIR);
-    fs.writeFileSync(CARRY_OVER_SENTINEL, ''); // mark complete so future process starts skip the full pass
+    const lockPath = path.join(SHARED_MEMORY_DIR, '.lock');
+    const token = tryAcquireLock(lockPath);
+    if (!token) return; // another shared writer owns the store; retry on a later call
+    try {
+      mergeLocalIntoSharedDir(SHARED_MEMORY_DIR);
+      fs.writeFileSync(CARRY_OVER_SENTINEL, '');
+      _carryOverChecked = true;
+    } finally {
+      releaseLock(lockPath, token);
+    }
   } catch (err) {
     // best-effort — carry-over failure must never break normal operation, but log the trail
     logDiag('shared_dir carry-over failed', err);
@@ -191,6 +200,7 @@ function mergeLocalIntoSharedDir(sharedDir) {
     ? fs.readFileSync(sharedIndexPath, 'utf8')
     : INITIAL_MEMORY;
   const sharedFilesOnDisk = new Set(fs.readdirSync(sharedDir));
+  const sharedIndexed = new Set(sharedRaw.split('\n').map(parseIndexLine).filter(Boolean).map(entry => entry.filename));
 
   const localLines = fs.readFileSync(path.join(LEGACY_MEMORY_DIR, 'MEMORY.md'), 'utf8').split('\n');
   const toAppend = [];
@@ -199,14 +209,17 @@ function mergeLocalIntoSharedDir(sharedDir) {
     const parsed = parseIndexLine(line);
     if (!parsed) continue; // headers/blanks — destination keeps its own structure
     const srcPath = path.join(LEGACY_MEMORY_DIR, parsed.filename);
-    if (!fs.existsSync(srcPath)) continue; // orphaned local entry — skip
+    if (!isRegularFile(srcPath)) continue; // orphaned or unsafe local entry — skip
 
     const destName = resolveDestName(srcPath, sharedDir, parsed.filename, sharedFilesOnDisk);
-    if (destName === null) continue; // identical content already present — no-op
-
-    atomicWriteFileSync(path.join(sharedDir, destName), fs.readFileSync(srcPath, 'utf8'));
-    sharedFilesOnDisk.add(destName);
-    toAppend.push(line.replace(`](${parsed.filename})`, `](${destName})`));
+    if (!sharedFilesOnDisk.has(destName)) {
+      atomicWriteFileSync(path.join(sharedDir, destName), fs.readFileSync(srcPath, 'utf8'));
+      sharedFilesOnDisk.add(destName);
+    }
+    if (!sharedIndexed.has(destName)) {
+      toAppend.push(line.replace(`](${parsed.filename})`, `](${destName})`));
+      sharedIndexed.add(destName);
+    }
   }
 
   if (toAppend.length) {
@@ -218,17 +231,18 @@ function mergeLocalIntoSharedDir(sharedDir) {
 }
 
 // Decide where a local topic file lands in sharedDir.
-// Returns the destination filename, or null if the content is already present (no-op).
+// Returns the destination filename. Identical content retains its existing name so a
+// missing shared index entry can still be restored without copying the file.
 function resolveDestName(srcPath, sharedDir, filename, sharedFilesOnDisk) {
   const originalDest = path.join(sharedDir, filename);
   if (!fs.existsSync(originalDest)) return filename; // no collision
 
-  if (filesEqual(srcPath, originalDest)) return null; // already there, identical
+  if (filesEqual(srcPath, originalDest)) return filename; // already there, identical
 
   const suffixed = filename.replace(/\.md$/, '-opim.md');
   const suffixedDest = path.join(sharedDir, suffixed);
   if (!fs.existsSync(suffixedDest)) return suffixed;
-  if (filesEqual(srcPath, suffixedDest)) return null; // already migrated in a prior run
+  if (filesEqual(srcPath, suffixedDest)) return suffixed; // already migrated in a prior run
 
   // Exceedingly rare: both slots taken by different content — bump a counter.
   let n = 2, candidate;
@@ -237,8 +251,19 @@ function resolveDestName(srcPath, sharedDir, filename, sharedFilesOnDisk) {
   return candidate;
 }
 
+function isSafeTopicFilename(filename) {
+  const lower = typeof filename === 'string' ? filename.toLowerCase() : '';
+  return lower.endsWith('.md') && lower !== 'memory.md' && !filename.startsWith('.') &&
+    !/[\\/\[\]\(\)]/.test(filename) && !filename.includes('..');
+}
+
+function isRegularFile(filePath) {
+  try { return fs.lstatSync(filePath).isFile(); } catch { return false; }
+}
+
 function filesEqual(pathA, pathB) {
-  return fs.readFileSync(pathA, 'utf8') === fs.readFileSync(pathB, 'utf8');
+  return isRegularFile(pathA) && isRegularFile(pathB) &&
+    fs.readFileSync(pathA, 'utf8') === fs.readFileSync(pathB, 'utf8');
 }
 
 // Test-only: reset the carry-over guard to simulate a fresh process start.
@@ -276,6 +301,30 @@ function atomicWriteFileSync(filePath, content) {
   const tmpPath = `${filePath}.tmp-${process.pid}`;
   fs.writeFileSync(tmpPath, content, 'utf8');
   fs.renameSync(tmpPath, filePath);
+}
+
+function removedListPath(memoryDir) {
+  return path.join(memoryDir, '.ocl-removed');
+}
+
+function readRemovedList(memoryDir) {
+  try {
+    return new Set(fs.readFileSync(removedListPath(memoryDir), 'utf8').split('\n')
+      .filter(isSafeTopicFilename));
+  } catch { return new Set(); }
+}
+
+function addToRemovedList(memoryDir, filename) {
+  const removed = readRemovedList(memoryDir);
+  if (removed.has(filename)) return;
+  removed.add(filename);
+  atomicWriteFileSync(removedListPath(memoryDir), [...removed].join('\n') + '\n');
+}
+
+function removeFromRemovedList(memoryDir, filename) {
+  const removed = readRemovedList(memoryDir);
+  if (!removed.delete(filename)) return;
+  atomicWriteFileSync(removedListPath(memoryDir), removed.size ? [...removed].join('\n') + '\n' : '');
 }
 
 // Read no more than maxBytes, checking size before allocating file contents. The final UTF-8
@@ -481,6 +530,10 @@ export function readMemoryIndex(maxLines) {
       atomicWriteFileSync(memoryIndex, INITIAL_MEMORY);
       return INITIAL_MEMORY;
     }
+    if (!isRegularFile(memoryIndex)) {
+      logDiag('refusing to read unsafe MEMORY.md', 'not a regular file');
+      return null;
+    }
     const { text, truncated: oversized } = readTextPrefixSync(memoryIndex, MAX_BYTES);
     const lines = text.split('\n');
     if (oversized) {
@@ -535,7 +588,7 @@ export function parseIndexLine(line) {
   // produce these characters) — this guards against a corrupted or maliciously co-written
   // index file (a real, if narrow, risk once shared_dir puts another tool in the trust
   // boundary) flowing into any path.join(memoryDir, filename) call downstream.
-  if (/[\\/]/.test(filename) || filename.includes('..')) return null;
+  if (!isSafeTopicFilename(filename)) return null;
   return {
     prefix:   match[1],
     name:     match[2],
@@ -652,7 +705,7 @@ export function maintainIndex(lines, config, memoryDir = getMemoryDir()) {
     const parsed = parseIndexLine(lines[i]);
     if (!parsed) continue;
     const { filename } = parsed;
-    if (!fs.existsSync(path.join(memoryDir, filename))) continue; // orphan
+    if (!isRegularFile(path.join(memoryDir, filename))) continue; // orphan or unsafe file
     const thisDate = (parsed.rest.match(ISO_DATE_RE) ?? [])[1] ?? '';
     const existing = best.get(filename);
     if (!existing) {
@@ -750,9 +803,10 @@ export function searchMemory(query) {
   const memoryDir = getMemoryDir();
   if (!fs.existsSync(memoryDir)) return results;
   for (const file of fs.readdirSync(memoryDir)) {
-    if (!file.endsWith('.md')) continue;
+    if (!isSafeTopicFilename(file)) continue;
     if (SKIP.has(file) || indexedNames.has(file)) continue;
     const filePath = path.join(memoryDir, file);
+    if (!isRegularFile(filePath)) continue;
     const { text } = readTextPrefixSync(filePath, MAX_BYTES);
     const lines = text.split('\n');
     for (const line of lines) {
@@ -770,42 +824,69 @@ export function searchMemory(query) {
 // --- Concurrency ---
 
 /**
- * Cross-process advisory file lock. A single in-process mutex is not enough once the
- * memory dir can be shared with other tools/processes (shared_dir: true). Acquires by
- * atomically creating a `.lock` file (fails if it already exists); a lock older than
- * LOCK_STALE_MS is assumed abandoned by a crashed process and is stolen.
+ * Cross-process advisory lock shared with openclaude-memory. The first tab-separated
+ * field is the PID it uses for liveness checks; the full token prevents a former owner
+ * from deleting a lock it no longer owns.
  */
-async function acquireLock(lockPath) {
-  for (;;) {
-    try {
-      fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
-      return;
-    } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
-      try {
-        const stat = fs.statSync(lockPath);
-        if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-          try { fs.unlinkSync(lockPath); } catch {}
-          continue;
-        }
-      } catch {
-        continue; // lock file vanished between our check and stat — retry immediately
-      }
-      await new Promise(r => setTimeout(r, 20));
-    }
+function lockHolderAlive(lockPath, age) {
+  let pid;
+  try { pid = Number.parseInt(fs.readFileSync(lockPath, 'utf8').trim().split('\t')[0], 10); }
+  catch { pid = NaN; }
+  if (!Number.isInteger(pid)) return age <= LOCK_STALE_HARD_MS;
+  try { process.kill(pid, 0); return true; }
+  catch (err) { return err.code !== 'ESRCH'; }
+}
+
+function tryAcquireLock(lockPath) {
+  const token = `${process.pid}\t${Date.now()}\t${Math.random().toString(36).slice(2)}`;
+  try {
+    fs.writeFileSync(lockPath, token, { flag: 'wx' });
+    return token;
+  } catch (err) {
+    if (err.code !== 'EEXIST') throw err;
   }
+  try {
+    const age = Date.now() - fs.statSync(lockPath).mtimeMs;
+    if (age > LOCK_STALE_MS && !lockHolderAlive(lockPath, age)) {
+      try { fs.unlinkSync(lockPath); } catch {}
+      try {
+        fs.writeFileSync(lockPath, token, { flag: 'wx' });
+        return token;
+      } catch (err) {
+        if (err.code !== 'EEXIST') throw err;
+      }
+    }
+  } catch { /* lock changed while inspected; caller retries */ }
+  return null;
+}
+
+function releaseLock(lockPath, token) {
+  try {
+    if (fs.readFileSync(lockPath, 'utf8') === token) fs.unlinkSync(lockPath);
+  } catch { /* lock was already released or replaced */ }
 }
 
 async function withLock(fn) {
+  const { sharedDir } = parseRules();
   const memoryDir = getMemoryDir();
   fs.mkdirSync(memoryDir, { recursive: true });
   const lockPath = path.join(memoryDir, '.lock');
-  await acquireLock(lockPath);
-  try {
-    return await fn();
-  } finally {
-    try { fs.unlinkSync(lockPath); } catch {}
-  }
+  const deadline = sharedDir ? Date.now() + LOCK_SHARED_TIMEOUT_MS : Infinity;
+  let token;
+  do {
+    token = tryAcquireLock(lockPath);
+    if (token) {
+      try { return await fn(); }
+      finally { releaseLock(lockPath, token); }
+    }
+    await new Promise(r => setTimeout(r, 20));
+  } while (Date.now() < deadline);
+
+  await new Promise(r => setTimeout(r, LOCK_RETRY_DELAY_MS));
+  const retryToken = tryAcquireLock(lockPath);
+  if (!retryToken) return null;
+  try { return await fn(); }
+  finally { releaseLock(lockPath, retryToken); }
 }
 
 // --- Tool execute functions ---
@@ -819,10 +900,11 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
   if (toSlug(topic) === RESERVED_TOPIC_SLUG) {
     return `Reserved topic: "${RESERVED_TOPIC_SLUG}" has been retired. Persist durable facts as their own topics; automatic session orientation is managed in HANDOFF.md.`;
   }
+  if (toSlug(topic) === 'memory') return 'Invalid topic: "MEMORY.md" is reserved for the memory index.';
 
   // backwards compat: overwrite: true maps to mode: 'replace'
   const replace = mode === 'replace' || overwrite === true;
-  return withLock(() => {
+  const result = await withLock(() => {
     const memoryDir = getMemoryDir();
     const memoryIndex = path.join(memoryDir, 'MEMORY.md');
     fs.mkdirSync(memoryDir, { recursive: true });
@@ -832,16 +914,29 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
       ? fs.readFileSync(memoryIndex, 'utf8')
       : INITIAL_MEMORY;
 
-    // Prefer existing filename if the topic is already indexed (avoids slug drift)
+    // Preserve the indexed filename for an exact existing topic name. A different
+    // indexed topic with the same slug gets a numeric suffix instead of sharing a file.
     let filename = toSlug(topic) + '.md';
+    const indexed = new Set();
+    let matchedExisting = false;
     for (const line of rawIndex.split('\n')) {
       const parsed = parseIndexLine(line);
-      if (parsed && parsed.name.toLowerCase() === topic.toLowerCase()) {
+      if (!parsed) continue;
+      indexed.add(parsed.filename);
+      if (parsed.name.toLowerCase() === topic.toLowerCase()) {
         filename = parsed.filename;
+        matchedExisting = true;
         break;
       }
     }
+    if (!matchedExisting && indexed.has(filename)) {
+      const base = filename.slice(0, -3);
+      let n = 2;
+      do { filename = `${base}-${n++}.md`; } while (indexed.has(filename));
+    }
     const topicPath = path.join(memoryDir, filename);
+    if (fs.existsSync(topicPath) && !isRegularFile(topicPath))
+      return `Invalid topic: "${filename}" is not a regular file.`;
 
     let isNew = false;
     const dt = nowIso();
@@ -867,13 +962,15 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
     lines = upsertIndexLine(lines, filename, topic, summary, pin);
     lines = maintainIndex(lines, parseRules(), memoryDir);
     atomicWriteFileSync(memoryIndex, lines.join('\n'));
+    if (memoryDir === SHARED_MEMORY_DIR) removeFromRemovedList(memoryDir, filename);
 
     return `${isNew ? 'Created' : 'Updated'} memory topic "${topic}" (${filename}).`;
   });
+  return result ?? LOCK_BUSY_MESSAGE;
 }
 
 export async function executeRemoveMemory({ topic }) {
-  return withLock(() => {
+  const result = await withLock(() => {
     const memoryIndex = getMemoryIndex();
     if (!fs.existsSync(memoryIndex)) return 'No memory index found.';
 
@@ -890,12 +987,14 @@ export async function executeRemoveMemory({ topic }) {
     lines.splice(found.idx, 1);
     lines = maintainIndex(lines, parseRules());
     atomicWriteFileSync(memoryIndex, lines.join('\n'));
+    if (getMemoryDir() === SHARED_MEMORY_DIR) addToRemovedList(SHARED_MEMORY_DIR, found.parsed.filename);
     return `Removed "${found.parsed.name}" from the index. Topic file is preserved on disk.`;
   });
+  return result ?? LOCK_BUSY_MESSAGE;
 }
 
 export async function executePinMemory({ topic, pin }) {
-  return withLock(() => {
+  const result = await withLock(() => {
     const memoryIndex = getMemoryIndex();
     if (!fs.existsSync(memoryIndex)) return 'No memory index found.';
 
@@ -925,6 +1024,7 @@ export async function executePinMemory({ topic, pin }) {
     atomicWriteFileSync(memoryIndex, lines.join('\n'));
     return `${pin ? 'Pinned' : 'Unpinned'} "${parsed.name}".\nBefore: ${before}\n After: ${afterLine}`;
   });
+  return result ?? LOCK_BUSY_MESSAGE;
 }
 
 // --- Compaction handoff ---
@@ -1053,8 +1153,8 @@ export function readHandoff() {
  */
 export function readIndexEntries() {
   const memoryIndex = getMemoryIndex();
-  if (!fs.existsSync(memoryIndex)) return [];
-  const raw = fs.readFileSync(memoryIndex, 'utf8');
+  if (!isRegularFile(memoryIndex)) return [];
+  const { text: raw } = readTextPrefixSync(memoryIndex, MAX_BYTES);
   const entries = [];
   for (const line of raw.split('\n')) {
     const parsed = parseIndexLine(line);
@@ -1077,8 +1177,9 @@ export function readIndexEntries() {
  * Read a topic file's body (frontmatter stripped) for display.
  */
 export function readTopicContent(filename) {
+  if (!isSafeTopicFilename(filename)) return '_(file not found)_';
   const filePath = path.join(getMemoryDir(), filename);
-  if (!fs.existsSync(filePath)) return '_(file not found)_';
+  if (!isRegularFile(filePath)) return '_(file not found)_';
   const { text, truncated } = readTextPrefixSync(filePath, MAX_BYTES);
   const fmMatch = text.match(/^---\n[\s\S]*?\n---\n/);
   const body = fmMatch ? text.slice(fmMatch[0].length).trimStart() : text;
