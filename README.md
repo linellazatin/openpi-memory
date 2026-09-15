@@ -1,7 +1,13 @@
 # openpi-memory
 
-[![npm version](https://img.shields.io/npm/v/@openlines/openpi-memory)](https://www.npmjs.com/package/@openlines/openpi-memory)
+<div align="center">
+
+[![opp version](https://img.shields.io/npm/v/@openlines/openpi-memory?color=red)](https://www.npmjs.com/package/@openlines/openpi-memory)
+[![opp total](https://img.shields.io/npm/dt/@openlines/openpi-memory?color=red)](https://www.npmjs.com/package/@openlines/openpi-memory)
+[![opp downloads](https://img.shields.io/npm/dm/@openlines/openpi-memory?color=red)](https://www.npmjs.com/package/@openlines/openpi-memory)
 [![license](https://img.shields.io/npm/l/@openlines/openpi-memory)](./LICENSE)
+
+</div>
 
 Global persistent memory for [pi coding agent](https://pi.dev) sessions. **Open. Configurable.** Inspired by Claude Code's auto-memory — your agent remembers what it learns, across every session, globally.
 
@@ -9,6 +15,10 @@ A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory)
 
 > Considering that vast majority of people who use **pi** literally creates their own extensions, I'm shooting my shot on this memory extension that I believe is good enough to be your *ultra-simplest* memory handler.
 
+>
+> ## v0.3.6 - shared-store hardening
+> - `shared_dir` now follows current openclaude-memory locking and removal conventions, while remaining a same-user collaboration feature
+> - unsafe files, index collisions, and unbounded interactive index reads are rejected or bounded
 >
 > ## v0.3.5 - browser selection fix
 > - the `/memory` browser now always acts on the highlighted entry, including after wrap-around navigation with `↑` from top

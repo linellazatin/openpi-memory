@@ -1,11 +1,20 @@
 {
   "name": "@openlines/openpi-memory",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Global persistent memory for pi coding agent sessions via MEMORY.md injection",
   "keywords": [
-    "pi-package"
+    "pi",
+    "pi-package",
+    "pi-coding-agent",
+    "pi-extension",
+    "coding-agent",
+    "extension",
+    "memory",
+    "skills",
+    "hooks"
   ],
   "license": "MIT",
+  "author": "linellazatin",
   "repository": {
     "type": "git",
     "url": "https://github.com/linellazatin/openpi-memory.git"

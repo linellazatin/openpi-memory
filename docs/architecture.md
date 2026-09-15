@@ -21,6 +21,8 @@ Hooks used:
 
 `write_memory` also carries `promptSnippet` and `promptGuidelines` so the model always has a reminder to persist, even on turns where the full memory block is not injected.
 
+When `shared_dir` is enabled, mutations and one-time carry-over use a PID-aware, strict filesystem lock compatible with current openclaude-memory. A busy shared store returns a retryable error instead of writing unlocked; writes remain atomic.
+
 ## Model compatibility
 
 The extension injects plain markdown into the system prompt and registers structured tools. Tool calls guarantee correct format and index integrity regardless of model tier — only the model's decision to call the tool (and what args to pass) varies.
