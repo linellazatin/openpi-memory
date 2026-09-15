@@ -200,6 +200,7 @@ function mergeLocalIntoSharedDir(sharedDir) {
     ? fs.readFileSync(sharedIndexPath, 'utf8')
     : INITIAL_MEMORY;
   const sharedFilesOnDisk = new Set(fs.readdirSync(sharedDir));
+  const sharedIndexed = new Set(sharedRaw.split('\n').map(parseIndexLine).filter(Boolean).map(entry => entry.filename));
 
   const localLines = fs.readFileSync(path.join(LEGACY_MEMORY_DIR, 'MEMORY.md'), 'utf8').split('\n');
   const toAppend = [];
@@ -211,11 +212,14 @@ function mergeLocalIntoSharedDir(sharedDir) {
     if (!isRegularFile(srcPath)) continue; // orphaned or unsafe local entry — skip
 
     const destName = resolveDestName(srcPath, sharedDir, parsed.filename, sharedFilesOnDisk);
-    if (destName === null) continue; // identical content already present — no-op
-
-    atomicWriteFileSync(path.join(sharedDir, destName), fs.readFileSync(srcPath, 'utf8'));
-    sharedFilesOnDisk.add(destName);
-    toAppend.push(line.replace(`](${parsed.filename})`, `](${destName})`));
+    if (!sharedFilesOnDisk.has(destName)) {
+      atomicWriteFileSync(path.join(sharedDir, destName), fs.readFileSync(srcPath, 'utf8'));
+      sharedFilesOnDisk.add(destName);
+    }
+    if (!sharedIndexed.has(destName)) {
+      toAppend.push(line.replace(`](${parsed.filename})`, `](${destName})`));
+      sharedIndexed.add(destName);
+    }
   }
 
   if (toAppend.length) {
@@ -227,17 +231,18 @@ function mergeLocalIntoSharedDir(sharedDir) {
 }
 
 // Decide where a local topic file lands in sharedDir.
-// Returns the destination filename, or null if the content is already present (no-op).
+// Returns the destination filename. Identical content retains its existing name so a
+// missing shared index entry can still be restored without copying the file.
 function resolveDestName(srcPath, sharedDir, filename, sharedFilesOnDisk) {
   const originalDest = path.join(sharedDir, filename);
   if (!fs.existsSync(originalDest)) return filename; // no collision
 
-  if (filesEqual(srcPath, originalDest)) return null; // already there, identical
+  if (filesEqual(srcPath, originalDest)) return filename; // already there, identical
 
   const suffixed = filename.replace(/\.md$/, '-opim.md');
   const suffixedDest = path.join(sharedDir, suffixed);
   if (!fs.existsSync(suffixedDest)) return suffixed;
-  if (filesEqual(srcPath, suffixedDest)) return null; // already migrated in a prior run
+  if (filesEqual(srcPath, suffixedDest)) return suffixed; // already migrated in a prior run
 
   // Exceedingly rare: both slots taken by different content — bump a counter.
   let n = 2, candidate;
@@ -909,14 +914,25 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
       ? fs.readFileSync(memoryIndex, 'utf8')
       : INITIAL_MEMORY;
 
-    // Prefer existing filename if the topic is already indexed (avoids slug drift)
+    // Preserve the indexed filename for an exact existing topic name. A different
+    // indexed topic with the same slug gets a numeric suffix instead of sharing a file.
     let filename = toSlug(topic) + '.md';
+    const indexed = new Set();
+    let matchedExisting = false;
     for (const line of rawIndex.split('\n')) {
       const parsed = parseIndexLine(line);
-      if (parsed && parsed.name.toLowerCase() === topic.toLowerCase()) {
+      if (!parsed) continue;
+      indexed.add(parsed.filename);
+      if (parsed.name.toLowerCase() === topic.toLowerCase()) {
         filename = parsed.filename;
+        matchedExisting = true;
         break;
       }
+    }
+    if (!matchedExisting && indexed.has(filename)) {
+      const base = filename.slice(0, -3);
+      let n = 2;
+      do { filename = `${base}-${n++}.md`; } while (indexed.has(filename));
     }
     const topicPath = path.join(memoryDir, filename);
     if (fs.existsSync(topicPath) && !isRegularFile(topicPath))
@@ -1137,8 +1153,8 @@ export function readHandoff() {
  */
 export function readIndexEntries() {
   const memoryIndex = getMemoryIndex();
-  if (!fs.existsSync(memoryIndex)) return [];
-  const raw = fs.readFileSync(memoryIndex, 'utf8');
+  if (!isRegularFile(memoryIndex)) return [];
+  const { text: raw } = readTextPrefixSync(memoryIndex, MAX_BYTES);
   const entries = [];
   for (const line of raw.split('\n')) {
     const parsed = parseIndexLine(line);

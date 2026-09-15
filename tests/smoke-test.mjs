@@ -1411,6 +1411,52 @@ await test('local removal does not create openclaude tombstones', async () => {
 });
 
 // ═══════════════════════════════════════════════════════════
+// 20. flat-file index integrity
+// ═══════════════════════════════════════════════════════════
+
+console.log('\n--- 20. flat-file index integrity ---');
+
+await test('slug collisions allocate a distinct topic file', async () => {
+  writeRules('{ "shared_dir": false }');
+  await executeWriteMemory({ topic: 'Slug Collision!', content: 'first', summary: 'first' });
+  await executeWriteMemory({ topic: 'Slug Collision', content: 'second', summary: 'second' });
+  const entries = readIndexEntries();
+  assert.ok(entries.some(e => e.filename === 'slug-collision.md' && e.name === 'Slug Collision!'));
+  assert.ok(entries.some(e => e.filename === 'slug-collision-2.md' && e.name === 'Slug Collision'));
+  assert.ok(fs.readFileSync(path.join(LEGACY_DIR_PATH, 'slug-collision.md'), 'utf8').includes('first'));
+  assert.ok(fs.readFileSync(path.join(LEGACY_DIR_PATH, 'slug-collision-2.md'), 'utf8').includes('second'));
+});
+
+await test('carry-over indexes an identical shared topic missing from its index', async () => {
+  writeRules('{ "shared_dir": false }');
+  const localEntries = readIndexEntries();
+  const candidate = localEntries.find(e => e.filename !== 'MEMORY.md');
+  const localFile = path.join(LEGACY_DIR_PATH, candidate.filename);
+  fs.rmSync(SHARED_DIR_PATH, { recursive: true, force: true });
+  fs.mkdirSync(SHARED_DIR_PATH, { recursive: true });
+  fs.writeFileSync(path.join(SHARED_DIR_PATH, 'MEMORY.md'), '# Memory Index\n\n', 'utf8');
+  fs.copyFileSync(localFile, path.join(SHARED_DIR_PATH, candidate.filename));
+  _resetCarryOver();
+  writeRules('{ "shared_dir": true }');
+  getMemoryDir();
+  const lines = fs.readFileSync(path.join(SHARED_DIR_PATH, 'MEMORY.md'), 'utf8').split('\n');
+  assert.equal(lines.map(parseIndexLine).filter(Boolean).filter(e => e.filename === candidate.filename).length, 1);
+});
+
+await test('index browser and search ignore entries beyond the byte limit', async () => {
+  writeRules('{ "shared_dir": false }');
+  const index = fs.readFileSync(getMemoryIndex(), 'utf8');
+  const late = '- [Late Index](late-index.md) 2026-01-01 -- late_index_token\n';
+  fs.writeFileSync(getMemoryIndex(), '# Memory Index\n\n' + 'x'.repeat(MAX_BYTES + 100) + '\n' + late, 'utf8');
+  try {
+    assert.ok(!readIndexEntries().some(e => e.filename === 'late-index.md'), 'browser index is bounded');
+    assert.ok(!searchMemory('late_index_token').some(e => e.filename === 'late-index.md'), 'index search is bounded');
+  } finally {
+    fs.writeFileSync(getMemoryIndex(), index, 'utf8');
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
 // Results
 // ═══════════════════════════════════════════════════════════
 
