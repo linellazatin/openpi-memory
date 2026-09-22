@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.7] - 2026-09-22
+
+### Changed
+- Dev/typecheck baseline bumped to pi `0.87.0` (`@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` devDependencies). The supported runtime floor is unchanged (`peerDependencies >=0.84.2`); the extension's hooks were verified against both `0.84.2` and `0.87.0` with no source migration required.
+
+### Added
+- Host-load smoke test (`tests/extension.test.mjs`) that loads the real `extensions/index.ts` through pi's own loader (`discoverAndLoadExtensions`) and verifies clean load/compile, registration of all four event handlers, three tools, and the `/memory` command, `session_start` file bootstrapping, and `before_agent_start` memory injection. `npm test` now runs both smoke suites (core logic + host-load wiring).
+
 ## [0.3.6] - 2026-09-15
 
 ### Fixed

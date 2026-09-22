@@ -2,23 +2,24 @@
 
 ## What this is
 
-OpenPI Memory is a TypeScript/Node.js project that provides persistent memory capabilities for Pi. The repository includes the extension entry point, a shared core module, a reusable memory skill, documentation, and a smoke test.
+OpenPI Memory is a TypeScript/Node.js project that provides persistent memory capabilities for Pi. The repository includes the extension entry point, a shared core module, a reusable memory skill, documentation, and smoke tests.
 
 ## Commands
 
 ```sh
-npm test                 # Run the smoke test
+npm test                 # Run both smoke suites (core logic + host-load wiring)
 npm run typecheck        # Type-check without emitting files
 ```
 
-There is no declared build or lint command. Keep changes compatible with the configured TypeScript compiler and validate behavioral changes with the smoke test.
+There is no declared build or lint command. Keep changes compatible with the configured TypeScript compiler and validate behavioral changes with the smoke tests.
 
 ## Architecture
 
 - `extensions/index.ts` is the TypeScript extension entry point.
 - `extensions/memory-core.mjs` contains the reusable memory core used by the extension.
 - `skills/memory/SKILL.md` defines the agent-facing memory workflow.
-- `tests/smoke-test.mjs` exercises the project end to end at a basic level.
+- `tests/core.test.mjs` exercises the core memory logic end to end.
+- `tests/extension.test.mjs` loads the extension through pi's loader and verifies handler/tool/command registration and memory injection.
 
 Documentation describes the intended behavior and operating model, including memory injection, configuration, shared directories, and feature boundaries. Read the relevant document before changing those areas.
 
@@ -30,7 +31,7 @@ Consult `README.md` for installation and usage. For configuration changes, use `
 
 ## Testing and operational quirks
 
-Run `npm run typecheck` and `npm test` after modifying extension or core behavior. The smoke test is the only declared test command, so do not assume a separate unit-test, build, or lint pipeline exists.
+Run `npm run typecheck` and `npm test` after modifying extension or core behavior. `npm test` is the only declared test command (it runs both smoke suites), so do not assume a separate unit-test, build, or lint pipeline exists.
 
 Memory behavior is documented across `docs/memory-injection.md`, `docs/architecture.md`, and `docs/faq.md`. Treat documented persistence and injection behavior as compatibility-sensitive.
 

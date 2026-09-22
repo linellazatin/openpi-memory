@@ -21,6 +21,8 @@ Hooks used:
 
 `write_memory` also carries `promptSnippet` and `promptGuidelines` so the model always has a reminder to persist, even on turns where the full memory block is not injected.
 
+`before_agent_start` returns a full `systemPrompt` replacement rather than patching pi's diffed `systemPromptOptions.sections`. On pi `>=0.86` this is a whole-prompt cache miss whenever the memory block re-injects (every `injectEveryNTurns`); non-injected turns keep pi's normal cached prompt. Memory is free-form text that changes across sessions, so this cost is accepted for simplicity.
+
 When `shared_dir` is enabled, mutations and one-time carry-over use a PID-aware, strict filesystem lock compatible with current openclaude-memory. A busy shared store returns a retryable error instead of writing unlocked; writes remain atomic.
 
 ## Model compatibility
@@ -137,8 +139,17 @@ Higher N saves more tokens but increases the gap between memory rule refreshes. 
 ## Development
 
 ```bash
-# Run smoke tests (no install required)
-node tests/smoke-test.mjs
+# Run both smoke suites (core logic + host-load extension wiring)
+npm test
+
+# Core logic smoke tests only (no install required — plain node, no pi imports)
+node tests/core.test.mjs
+
+# Host-load smoke test (requires npm install — imports @earendil-works/pi-coding-agent)
+node tests/extension.test.mjs
+
+# Type-check against the pinned pi baseline
+npm run typecheck
 
 # Load extension temporarily without installing
 pi -e ./extensions/index.ts
