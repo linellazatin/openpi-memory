@@ -94,6 +94,10 @@ export default function (pi: ExtensionAPI) {
   // ── before_agent_start ──────────────────────────────────────────────────
   // Fires once per user prompt (not per internal LLM call).
   // Reads rules fresh each call — changes to memory.jsonc take effect immediately.
+  // NOTE (pi >=0.86): returning `systemPrompt` replaces the whole prompt for that run, so
+  // each re-injection (every injectEveryNTurns) is a full cache miss. Pi's structured
+  // sections approach could diff incrementally, but memory is free-form text that changes
+  // between turns/sessions, so we accept the cache-miss cost for now.
 
   pi.on('before_agent_start', async (event) => {
     _turnCount++;

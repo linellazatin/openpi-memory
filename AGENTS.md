@@ -1,46 +1,53 @@
-# OpenPI Memory Repository Guide
-
 ## What this is
 
-OpenPI Memory is a TypeScript/Node.js project that provides persistent memory capabilities for Pi. The repository includes the extension entry point, a shared core module, a reusable memory skill, documentation, and a smoke test.
+`openpi-memory` is a global persistent memory extension for the [pi coding agent](https://pi.dev). It lets the agent remember what it learns across sessions, globally, inspired by Claude Code's auto-memory. It is a port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory) to pi's extension API.
+
+The package is published as `@openlines/openpi-memory`. A future migration to the [nanomneme](https://github.com/linellazatin/nanomneme) SQLite/FTS5 core is under consideration.
 
 ## Commands
 
-```sh
-npm test                 # Run the smoke test
-npm run typecheck        # Type-check without emitting files
-```
+```bash
+npm test
+# runs: node tests/core.test.mjs && node tests/extension.test.mjs
 
-There is no declared build or lint command. Keep changes compatible with the configured TypeScript compiler and validate behavioral changes with the smoke test.
+npm run typecheck
+# runs: tsc --noEmit
+```
 
 ## Architecture
 
-- `extensions/index.ts` is the TypeScript extension entry point.
-- `extensions/memory-core.mjs` contains the reusable memory core used by the extension.
-- `skills/memory/SKILL.md` defines the agent-facing memory workflow.
-- `tests/smoke-test.mjs` exercises the project end to end at a basic level.
+The repository is a pi coding-agent extension. It uses flat files as the memory store, with a shared-store mode (`shared_dir`) adapted from openclaude-memory's locking and removal conventions for same-user collaboration.
 
-Documentation describes the intended behavior and operating model, including memory injection, configuration, shared directories, and feature boundaries. Read the relevant document before changing those areas.
+Top-level layout:
 
-## Configuration and installation
+- `.github/` — repository automation
+- `.pi/` — pi-specific configuration
+- `docs/` — documentation
+- `extensions/` — extension entry points
+- `skills/` — agent skills
+- `tests/` — test suite (core and extension tests, plus a host-load smoke test)
+- `AGENTS.md`, `README.md` / `readme.md` — agent and user documentation
+- `package.json`, `package-lock.json`, `tsconfig.json` — package and TypeScript configuration
+- `CHANGELOG.md`, `LICENSE`
 
-Project metadata, scripts, and dependencies are defined in `package.json`; the lockfile is `package-lock.json`. TypeScript settings live in `tsconfig.json`.
+Recent versions noted in the README:
 
-Consult `README.md` for installation and usage. For configuration changes, use `docs/configuration.md`; for shared storage behavior, use `docs/shared-directory.md`.
+- **v0.3.7** — pi 0.87 compatibility; hooks verified against pi 0.84.2–0.87.0 with no source changes; added host-load smoke test through pi's real loader.
+- **v0.3.6** — shared-store hardening for `shared_dir`, including unsafe file handling, index collision handling, and unbo... (truncated in source).
 
 ## Testing and operational quirks
 
-Run `npm run typecheck` and `npm test` after modifying extension or core behavior. The smoke test is the only declared test command, so do not assume a separate unit-test, build, or lint pipeline exists.
-
-Memory behavior is documented across `docs/memory-injection.md`, `docs/architecture.md`, and `docs/faq.md`. Treat documented persistence and injection behavior as compatibility-sensitive.
+- There are two test targets: `tests/core.test.mjs` and `tests/extension.test.mjs`. Run the narrowest relevant test before the full suite when changing behavior.
+- `npm test` chains both test files with `&&`, so a failure in the first stops the second.
+- `tsconfig.json` is present and `typecheck` uses `tsc --noEmit`; there is no build script.
+- Keep secrets and generated output out of tracked configuration.
 
 ## Key files
 
-- `README.md`: installation, usage, and overview
-- `CHANGELOG.md`: release history
-- `docs/architecture.md`: system design
-- `docs/configuration.md`: configuration reference
-- `docs/features.md`: feature reference
-- `.github/workflows/`: CI workflows
-
-<!-- opl-init:fp 0312378ebfdaeffe -->
+- `package.json` — scripts and package metadata for the npm package
+- `tsconfig.json` — TypeScript configuration for `tsc --noEmit`
+- `tests/core.test.mjs` — core memory behavior tests
+- `tests/extension.test.mjs` — extension integration tests
+- `extensions/` — extension source/entry points
+- `AGENTS.md` — guidance for coding agents working in this repository
+<!-- opl-init:fp 150779bf5a833b42 -->

@@ -1,7 +1,7 @@
 /**
- * Smoke tests for openpi-memory
+ * Core logic smoke tests for openpi-memory
  *
- * Run: node test.mjs
+ * Run: node tests/core.test.mjs
  *
  * STATE ISOLATION:
  * PI_CODING_AGENT_DIR is fixed at memory-core load time; getMemoryDir()/getMemoryIndex()
