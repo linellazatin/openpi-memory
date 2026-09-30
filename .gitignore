@@ -1,2 +1,6 @@
 .pi/
 node_modules/
+.nanomneme/
+
+## annoying
+.DS_Store
