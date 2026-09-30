@@ -1,6 +1,6 @@
 {
   "name": "@openlines/openpi-memory",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "Global persistent memory for pi coding agent sessions via MEMORY.md injection",
   "keywords": [
     "pi",
@@ -22,7 +22,7 @@
   "type": "module",
   "main": "./extensions/index.ts",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19.0"
   },
   "pi": {
     "extensions": [
@@ -41,12 +41,12 @@
     "skills/"
   ],
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.84.2",
-    "@earendil-works/pi-tui": ">=0.84.2"
+    "@earendil-works/pi-coding-agent": ">=0.87.0",
+    "@earendil-works/pi-tui": ">=0.87.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.87.0",
-    "@earendil-works/pi-tui": "0.87.0",
+    "@earendil-works/pi-coding-agent": ">=0.87.0",
+    "@earendil-works/pi-tui": ">=0.87.0",
     "typebox": "1.3.16",
     "typescript": "7.0.2"
   }
