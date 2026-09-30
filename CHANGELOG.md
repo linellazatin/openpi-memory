@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.8] - 2026-09-30
+
+### Changed
+- Supported runtime floor raised to pi `0.87.0`: `peerDependencies` and `devDependencies` are now `>=0.87.0` (dev resolves to the newest published pi, currently `0.99.1`). `engines.node` raised to `>=22.19.0`, matching pi 0.99's own requirement.
+- Re-assessed against pi `0.99.1` (codemode + MCP, terminal-derived `system` theme, tool `exposure`/`annotations`, `outputSchema`, virtual modules). No source migration required: every imported symbol, event payload, `ctx.ui.custom` overlay signature, and theme token in use is unchanged, name collisions with `builtin:mcp` (`/mcp`) and `builtin:llama` (`/llama`) were checked and are clear, and `compaction_end` is still delivered only to UI listeners — `session_compact` remains the correct auto-resume seam.
+
+### Added
+- Built-in name-collision guard in the host-load smoke test: `LoadExtensionsResult.warnings` is pinned as empty, and `DefaultResourceLoader` is driven with stand-in built-ins claiming the resource names pi claims today (`/mcp`, `/llama`, `codemode`, `tool_search`) with a positive control proving the guard fires. Skipped on pi `<0.99`, which has no replacement-warning mechanism.
+
 ## [0.3.7] - 2026-09-22
 
 ### Changed

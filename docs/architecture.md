@@ -21,7 +21,7 @@ Hooks used:
 
 `write_memory` also carries `promptSnippet` and `promptGuidelines` so the model always has a reminder to persist, even on turns where the full memory block is not injected.
 
-`before_agent_start` returns a full `systemPrompt` replacement rather than patching pi's diffed `systemPromptOptions.sections`. On pi `>=0.86` this is a whole-prompt cache miss whenever the memory block re-injects (every `injectEveryNTurns`); non-injected turns keep pi's normal cached prompt. Memory is free-form text that changes across sessions, so this cost is accepted for simplicity.
+`before_agent_start` returns a full `systemPrompt` replacement rather than patching pi's diffed `systemPromptOptions.sections`. On pi `>=0.87` this is a whole-prompt cache miss whenever the memory block re-injects (every `injectEveryNTurns`); non-injected turns keep pi's normal cached prompt. Pi still recommends the sections route (unchanged through `0.99.x`), but memory is free-form text that changes across sessions, so this cost is accepted for simplicity.
 
 When `shared_dir` is enabled, mutations and one-time carry-over use a PID-aware, strict filesystem lock compatible with current openclaude-memory. A busy shared store returns a retryable error instead of writing unlocked; writes remain atomic.
 

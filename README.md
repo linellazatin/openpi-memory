@@ -23,6 +23,10 @@ A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory)
 > Considering that vast majority of people who use **pi** literally creates their own extensions, I'm shooting my shot on this memory extension that I believe is good enough to be your *ultra-simplest* memory handler.
 
 >
+> ## v0.3.8 - pi 0.99 compatibility
+> - re-assessed against pi 0.99.1 with no source changes; hooks, tools, overlay UI, and theme tokens are all unchanged
+> - supported floor is now pi 0.87.0 (`>=0.87.0`), `engines.node` `>=22.19.0`, and the host-load smoke test now guards against shadowing pi's built-in tool/command names
+>
 > ## v0.3.7 - pi 0.87 compatibility
 > - dev/typecheck baseline bumped to pi 0.87.0; hooks verified against 0.84.2 – 0.87.0 with no source changes
 > - added a host-load smoke test that loads the extension through pi's real loader
@@ -177,7 +181,7 @@ pi install git:github.com/linellazatin/openpi-memory
 
 The extension and skill load automatically after install. No further setup.
 
-**Requires pi coding agent `>=0.84.2`** (extension hooks verified against pi `0.84.2` and `0.87.0`). This is declared as an advisory `peerDependency` — pi provides its own copy of the API at runtime, so npm won't hard-block an older install; if you're on an older pi and auto-resume/consolidation stop working, upgrade pi.
+**Requires pi coding agent `>=0.87.0`** (extension hooks verified against pi `0.87.0` through `0.99.1`). This is declared as an advisory `peerDependency` — pi provides its own copy of the API at runtime, so npm won't hard-block an older install; if you're on an older pi and auto-resume/consolidation stop working, upgrade pi.
 
 ## Update
 

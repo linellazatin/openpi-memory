@@ -3,11 +3,14 @@
  *
  * Unlike tests/core.test.mjs (which tests memory-core.mjs directly), this test
  * loads the actual TypeScript extension through pi's real loader and confirms:
- *   1. The module compiles/loads with no errors against the installed pi version.
+ *   1. The module compiles/loads with no errors or load warnings against the installed pi version.
  *   2. The default factory executes and registers the expected event handlers,
  *      tools, and command.
  *   3. The session_start handler bootstraps the memory files on disk.
  *   4. The before_agent_start handler injects the memory index into the system prompt.
+ *      Section 6 below additionally checks, on pi >=0.99, that none of our tool/command names
+ *      shadow one of pi's built-in extensions (replacement-warning path in DefaultResourceLoader),
+ *      with a positive control proving the check itself fires.
  *
  * STATE ISOLATION: PI_CODING_AGENT_DIR and PI_SHARED_MEMORY_HOME are pointed at
  * temp dirs BEFORE loading the extension, because memory-core.mjs fixes AGENT_DIR
@@ -21,7 +24,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { discoverAndLoadExtensions } from '@earendil-works/pi-coding-agent';
+import { Type } from 'typebox';
+import { DefaultResourceLoader, VERSION as PI_VERSION, discoverAndLoadExtensions } from '@earendil-works/pi-coding-agent';
 
 // ── Temp-dir isolation (before any extension/module load) ───────────────────
 
@@ -55,6 +59,9 @@ async function ok(name, fn) {
 }
 
 assert.deepEqual(result.errors, [], `extension failed to load: ${JSON.stringify(result.errors)}`);
+// Pin the pi >=0.99 load-warning shape. The standalone loader leaves `warnings` empty (only the
+// resource loader fills it), so the real collision guard is section 6 below.
+assert.deepEqual(result.warnings ?? [], [], `extension emitted load warnings: ${JSON.stringify(result.warnings)}`);
 assert.equal(result.extensions.length, 1, 'expected exactly one loaded extension');
 
 const ext = result.extensions[0];
@@ -95,5 +102,78 @@ await ok('before_agent_start injects memory into the system prompt', async () =>
   assert.ok(injected.startsWith('BASE_PROMPT'), 'base system prompt was not preserved');
   assert.ok(injected.includes('## Global Memory'), 'memory index section not injected');
 });
+
+// 6. Built-in name-collision sentinel (pi >=0.99)
+// pi >=0.99 drops a replaceable built-in extension and pushes a load warning when another
+// extension registers the same tool/command/flag name. Only DefaultResourceLoader produces those
+// warnings, so drive it with stand-ins claiming the resource names pi's own built-ins use today
+// (`/mcp`, `/llama`, `codemode`, `tool_search`), plus a positive control proving the sentinel fires.
+
+const [piMajor, piMinor] = PI_VERSION.split('.').map(Number);
+const piReportsBuiltinReplacement = piMajor > 0 || (piMajor === 0 && piMinor >= 99);
+
+const standInCommand = (name) => ({
+  name,
+  builtin: true,
+  replaceable: true,
+  factory: (pi) => {
+    pi.registerCommand(name, { description: `stand-in built-in /${name}`, handler: async () => {} });
+  },
+});
+
+const standInTool = (name) => ({
+  name,
+  builtin: true,
+  replaceable: true,
+  factory: (pi) => {
+    pi.registerTool({
+      name,
+      label: name,
+      description: `stand-in built-in ${name}`,
+      parameters: Type.Object({}),
+      async execute() {
+        return { content: [{ type: 'text', text: name }], details: {} };
+      },
+    });
+  },
+});
+
+async function loadWithBuiltIns(extensionFactories) {
+  const loader = new DefaultResourceLoader({
+    cwd: CWD,
+    agentDir: AGENT_DIR,
+    additionalExtensionPaths: [extIndex],
+    extensionFactories,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+  });
+  await loader.reload();
+  return loader.getExtensions();
+}
+
+if (!piReportsBuiltinReplacement) {
+  console.log(`  SKIP  built-in collision sentinel (needs pi >=0.99, running ${PI_VERSION})`);
+} else {
+  await ok('keeps the built-in resource names of current pi free', async () => {
+    const res = await loadWithBuiltIns([
+      standInCommand('mcp'),
+      standInCommand('llama'),
+      standInTool('codemode'),
+      standInTool('tool_search'),
+    ]);
+    assert.deepEqual(res.errors, [], `unexpected load errors: ${JSON.stringify(res.errors)}`);
+    assert.deepEqual(res.warnings ?? [], [], `our extension replaced a built-in: ${JSON.stringify(res.warnings)}`);
+    assert.ok(res.extensions.some((e) => e.commands.has('memory')), '/memory must stay registered');
+  });
+
+  await ok('collision sentinel reports a taken built-in name', async () => {
+    const res = await loadWithBuiltIns([standInCommand('memory')]);
+    const warnings = res.warnings ?? [];
+    assert.equal(warnings.length, 1, `expected one replacement warning, got ${JSON.stringify(warnings)}`);
+    assert.match(warnings[0].warning, /command `\/memory`/, `unexpected warning text: ${warnings[0].warning}`);
+  });
+}
 
 console.log(`\n${passed} checks: ${passed} passed, 0 failed`);

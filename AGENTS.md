@@ -32,6 +32,7 @@ Top-level layout:
 
 Recent versions noted in the README:
 
+- **v0.3.8** — pi 0.99 re-assessment; verified against pi 0.87.0–0.99.1 with no source changes; supported floor raised to `>=0.87.0` and `engines.node` to `>=22.19.0`; host-load smoke test gained a built-in name-collision guard (skipped below pi 0.99).
 - **v0.3.7** — pi 0.87 compatibility; hooks verified against pi 0.84.2–0.87.0 with no source changes; added host-load smoke test through pi's real loader.
 - **v0.3.6** — shared-store hardening for `shared_dir`, including unsafe file handling, index collision handling, and unbo... (truncated in source).
 
