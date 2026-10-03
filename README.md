@@ -15,13 +15,21 @@ A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory)
 
 > <div align="center">
 >
-> ### An [upgraded, small, and deterministic SQLite core (FTS5/BM25) for coding-agent memory](https://github.com/linellazatin/nanomneme) is currently in development - which also has a **pi** adapter. Feel free to check it out, specially if you're already tired of flat-files as memory store (I won't stop you, though).
-> #### Once nanomneme has been fully adapted, and tested end-to-end, there's a big possibility that we'll be migrating to nanomneme infrastructure for memory system.
+> ### A [local-first, small, and deterministic SQLite core (FTS5/BM25) for coding-agent memory](https://nanomneme.openlines.dev) is currently in development - which also has a **pi** adapter. Feel free to check it out, specially if you're already tired of flat-files as memory store (I won't stop you, though).
 >
 > </div>
 
 > Considering that vast majority of people who use **pi** literally creates their own extensions, I'm shooting my shot on this memory extension that I believe is good enough to be your *ultra-simplest* memory handler.
 
+>
+> `Current project state also marked 'SAFE' for pi v1.0.0 release`
+>
+> ## v0.3.9 - shared-store coordination (feat. openclaude-memory)
+> - missing-index reads stay in memory; startup recap retirement runs under the directory lock
+> - local lock contention refuses instead of hanging; mutations retain the acquired directory across config changes
+> - migration locks local then shared and respects removal lists; unrelated unindexed slug owners are preserved
+> - atomic writes flush and clean temporary files, no-follow reads verify descriptors, and failed writes attempt rollback
+> - append and replace refresh current frontmatter metadata; 134 core tests and 12 real-loader checks pass on pi 0.99.1 and pi 1.0.0
 >
 > ## v0.3.8 - pi 0.99 compatibility
 > - re-assessed against pi 0.99.1 with no source changes; hooks, tools, overlay UI, and theme tokens are all unchanged
@@ -30,18 +38,6 @@ A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory)
 > ## v0.3.7 - pi 0.87 compatibility
 > - dev/typecheck baseline bumped to pi 0.87.0; hooks verified against 0.84.2 – 0.87.0 with no source changes
 > - added a host-load smoke test that loads the extension through pi's real loader
->
-> ## v0.3.6 - shared-store hardening
-> - `shared_dir` now follows current openclaude-memory locking and removal conventions, while remaining a same-user collaboration feature
-> - unsafe files, index collisions, and unbounded interactive index reads are rejected or bounded
->
-> ## v0.3.5 - browser selection fix
-> - the `/memory` browser now always acts on the highlighted entry, including after wrap-around navigation with `↑` from top
-> - pin/remove address an entry by its exact filename, so similarly-named entries can't be confused
->
-> ## v0.3.4 - smarter consolidation
-> - automatic threshold consolidation now stores pi's compaction summary as the `HANDOFF.md` orientation entry — a coherent next-session handoff instead of a raw last-messages scrape
-> - consolidation persists durable facts driven by your `memory.jsonc` rules, keeping the memory index lean
 >
 > see [CHANGELOG](CHANGELOG.md) for more details
 
@@ -126,9 +122,9 @@ The extension registers three tools the agent uses for all memory operations:
 | `remove_memory` | `topic`                                        | Removes the index entry (refuses if pinned); topic file preserved   |
 | `pin_memory`    | `topic`, `pin` (bool)                          | Pins or unpins an index entry                                       |
 
-`mode: "replace"` replaces the full topic body in-place (frontmatter preserved, `last_updated` refreshed). Use for state entries that should be current — hardware specs, environment config, user preferences. Default (`"append"`) appends under a dated heading, correct for logs of fixes, discoveries, and incremental notes. `overwrite: true` is a backwards-compatible alias for `mode: "replace"`.
+`mode: "replace"` replaces the body; append retains it and adds a dated section. Both refresh `name`, `description`, and `last_updated`, preserving `created` and other fields. Use replace for current state and append for new deltas. `overwrite: true` remains an alias for replace. A new topic cannot overwrite an unrelated indexed or unindexed slug owner; it gets a numeric suffix instead.
 
-Use these instead of asking the agent to edit files directly — they guarantee correct format, frontmatter, and index integrity regardless of model size.
+Use the tools for validated, locked updates rather than direct file edits. A missing index stays in memory until the first locked write creates it. Local contention refuses after about 500 ms; shared mode waits about 2 s and retries once after a 1 s delay. Ordinary failures attempt rollback, but atomicity is per file, not a crash-proof transaction. Format safeguards do not guarantee factual accuracy or model decisions; see [recovery boundaries](docs/faq.md).
 
 ## `/memory` command
 
@@ -181,7 +177,7 @@ pi install git:github.com/linellazatin/openpi-memory
 
 The extension and skill load automatically after install. No further setup.
 
-**Requires pi coding agent `>=0.87.0`** (extension hooks verified against pi `0.87.0` through `0.99.1`). This is declared as an advisory `peerDependency` — pi provides its own copy of the API at runtime, so npm won't hard-block an older install; if you're on an older pi and auto-resume/consolidation stop working, upgrade pi.
+**Requires pi coding agent `>=0.87.0`** (extension hooks verified against pi `0.87.0` through `1.0.0`). This is declared as an advisory `peerDependency` — pi provides its own copy of the API at runtime, so npm won't hard-block an older install; if you're on an older pi and auto-resume/consolidation stop working, upgrade pi.
 
 ## Update
 
@@ -196,7 +192,7 @@ pi update --extensions
 ```
 or just always do ` --all` for convenience
 
-Versioned installs (e.g. `npm:@openlines/openpi-memory@1.0.0`) are pinned and skipped by `--extensions`. Use `pi install npm:@openlines/openpi-memory@new-version` to move to a specific version.
+Versioned installs (e.g. `npm:@openlines/openpi-memory@0.3.9`) are pinned and skipped by `--extensions`. Use `pi install npm:@openlines/openpi-memory@new-version` to move to a specific version.
 
 ## Uninstall
 
