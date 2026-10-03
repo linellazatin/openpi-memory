@@ -1218,7 +1218,7 @@ export function readTopicContent(filename) {
   const filePath = path.join(getMemoryDir(), filename);
   if (!isRegularFile(filePath)) return '_(file not found)_';
   const { text, truncated } = readTextPrefixSync(filePath, MAX_BYTES);
-  const fmMatch = text.match(/^---\n[\s\S]*?\n---\n/);
+  const fmMatch = text.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n/);
   const body = fmMatch ? text.slice(fmMatch[0].length).trimStart() : text;
   return truncated
     ? body + '\n\n<!-- memory truncated: topic exceeds size limit; read the file directly for the full body -->'
