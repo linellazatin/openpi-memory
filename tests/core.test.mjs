@@ -612,6 +612,15 @@ await test('readTopicContent: returns body without frontmatter', async () => {
   assert.ok(body.includes('192.168.1.100'), 'content present');
 });
 
+await test('readTopicContent: strips CRLF frontmatter', async () => {
+  const filename = 'crlf-topic.md';
+  fs.writeFileSync(path.join(getMemoryDir(), filename), '---\r\nname: "CRLF"\r\ndescription: "d"\r\n---\r\n\r\nbody line\r\n', 'utf8');
+  const body = readTopicContent(filename);
+  assert.ok(!body.startsWith('---'), 'CRLF frontmatter stripped');
+  assert.ok(body.includes('body line'), 'body present');
+  fs.unlinkSync(path.join(getMemoryDir(), filename));
+});
+
 await test('readTopicContent: missing file returns not-found message', async () => {
   const body = readTopicContent('nonexistent.md');
   assert.ok(body.includes('not found'), 'not-found message');
