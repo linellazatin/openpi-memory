@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.9] - 2026-10-03
+
+### Fixed
+
+- Kept missing-index reads read-only and awaited locked startup recap retirement, preserving pins and shared removal intent.
+- Bounded local contention, retained the acquired directory across config changes, and rechecked stale lock inode/mtime.
+- Locked migration local then shared, respected both removal lists, and retained unrelated unindexed slug owners.
+- Verified no-follow descriptors, bounded previews/search after opening, flushed/cleaned atomic temporary files, and attempted rollback after ordinary write failures.
+- Refreshed current frontmatter name, description, and timestamp metadata in both write modes.
+- Refused FIFOs on nonblocking descriptor reads; exclusive config publication preserved racing creators and existing backups.
+
+### Tests
+
+- 134 core checks, 12 real pi-loader checks, and typecheck passed on pi 0.99.1 and pi 1.0.0. The 0.99.2–1.0.0 API surface changes were additive only; no source changes were required. The lockfile/CI dev baseline moved to pi 1.0.0.
+- The OpenCode sibling's real-process shared-writer check preserved bodies, pins, removals, foreign entries, and cleanup.
+
+### Documentation
+
+- Clarified per-file recovery boundaries, lock timings, delayed index creation, and the different injection semantics.
+
 ## [0.3.8] - 2026-09-30
 
 ### Changed

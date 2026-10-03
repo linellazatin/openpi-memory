@@ -10,23 +10,23 @@ The first time `shared_dir` resolves to `true`, the extension performs a one-tim
 
 This merge runs at most once, ever — not once per process. Completion is marked by an empty sentinel file, `~/.pi/agent/memory/.shared-dir-migrated`, written only after a successful locked merge. Every process start after that checks for the sentinel first: if present, the whole merge is skipped. If another writer holds the shared lock, carry-over waits for a later call instead of writing unlocked.
 
-Cross-process shared writes and carry-over use the same PID-aware filesystem lock; index/topic-file writes are atomic (write-to-temp then rename). This is a same-user collaboration feature for current openclaude-memory conventions, not a sandbox against an arbitrary local process. Shared removals preserve the topic file and add its filename to `.ocl-removed`, so openclaude-memory repair does not re-index it; writing the topic again clears that tombstone.
+Mutations retain the acquired directory across config changes. Local contention refuses after about 500 ms; shared mode waits about 2 s and retries once after 1 s. Migration locks local before shared and skips both removal lists. Startup recap retirement is locked too; shared removals record `.ocl-removed` before deleting discoverability. A re-store clears its tombstone only after success. Current OpenCode observes file changes without consuming its notification sentinel; pi reads fresh at its hooks and keeps its scheduled injection behavior.
+
+Reads verify safe regular `.md` files through no-follow descriptors, with bounded previews/search. Writes flush exclusive temporary files, rename atomically, and clean temporary files; ordinary failures attempt rollback. Atomicity is per file, not a multi-file crash transaction. Lock liveness treats `EPERM` as alive and rechecks stale inode/mtime, but the protocol lacks atomic compare-and-unlink. Use cooperating updated implementations on local filesystems; see [recovery boundaries](faq.md).
 
 ## First run: fresh install
 
 On a brand-new install, nothing exists on disk yet. Here's exactly what happens, in order:
 
 1. **Extension loads.** Hooks and tools register. No filesystem I/O happens yet.
-2. **`session_start` fires.** `parseRules()` runs first: `~/.pi/agent/memory.jsonc` doesn't exist and neither does a legacy `RULES.jsonc`, so it writes fresh defaults to `~/.pi/agent/memory.jsonc`. Then `readMemoryIndex()` runs: it resolves the memory dir (`shared_dir` defaults to `false`, so `~/.pi/agent/memory/`), creates that directory, and writes an empty `MEMORY.md` (`# Memory Index`).
+2. **`session_start` fires.** Config defaults are created if missing. `readMemoryIndex()` returns an empty index in memory if no file exists; it does not bootstrap `memory/` or `MEMORY.md`. Locked retirement of the legacy recap is awaited where an index exists.
 3. **You send your first prompt.** `before_agent_start` fires: it reads back the (empty) index and the rendered rules, and injects `## Global Memory` and `## Memory Rules` into the system prompt. No `HANDOFF.md` exists yet, so no `## Compaction Handoff` block is added.
 
 Resulting state:
 
 ```
 ~/.pi/agent/
-├── memory.jsonc          # fresh defaults
-└── memory/
-    └── MEMORY.md          # "# Memory Index" — empty, no entries yet
+└── memory.jsonc          # fresh defaults; memory/MEMORY.md appears on the first locked write
 ```
 
 The agent's first turn sees the empty index and your (default) persist rules, ready to start calling `write_memory`.
@@ -89,7 +89,7 @@ Net effect: the agent's first turn after upgrading behaves exactly as it did bef
 If you opt into `shared_dir` for openpi-memory *after* another tool (e.g. openclaude-memory for opencode) has already populated `~/.agents/memory/`, the merge carry-over handles it safely:
 
 - **No collision**: your local topic file doesn't exist in the shared dir yet — it is copied in and its entry is appended to the shared `MEMORY.md`.
-- **Identical-content collision**: the same file exists in the shared dir with byte-identical content — nothing is copied or appended (already there).
+- **Identical-content collision**: no duplicate file is copied; a missing index line is still appended so the topic remains discoverable.
 - **Differing-content collision**: the same filename exists in the shared dir but with different content — your local file is copied as `<name>-opim.md` and that filename is used in the appended index entry. The existing shared file and its entry are untouched.
 
 Example: you have `docker-setup.md` locally; the shared dir already has a `docker-setup.md` from opencode with different content. After carry-over:

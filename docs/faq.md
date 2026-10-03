@@ -6,6 +6,8 @@
 
 - Module-level injection state (`_injectedOnce`, `_turnCount`) is process-global. Safe for the standard single-user pi session; upgrade to a per-session Map if multi-session support is needed in future.
 - Manual edits to `MEMORY.md` or `memory.jsonc` made between user prompts are picked up on the next `before_agent_start` call (no cache to invalidate). This is by design.
+- Atomicity is per file, not a multi-file transaction. Normal failed writes attempt rollback; abrupt termination can leave an unindexed topic or stale index metadata, and directory entries are not fsynced. OpenCode's explicit repair can recover shared unindexed topics, excluding tombstones; pin flags that lived only in a missing index cannot be recovered.
+- The shared advisory protocol lacks atomic compare-and-unlink and does not protect against writers ignoring the lock. Use updated cooperating implementations on local filesystems.
 
 ## FAQ (post-0.3.0)
 
@@ -53,7 +55,15 @@ No. `memory.jsonc` is only ever written by the extension when it doesn't exist y
 Yes, when the co-tenant honors current openclaude-memory conventions. Shared mutations and carry-over use a PID-aware lock, and index/topic writes are atomic. A busy shared store returns a retryable error rather than writing unlocked. This is same-user collaboration, not protection from a local process that ignores the lock or deliberately edits files.
 
 **Q: Is the one-time `shared_dir` carry-over protected by that same lock?**
-Yes. Carry-over acquires the strict shared lock before reading or writing the shared index and writes its sentinel only after the merge succeeds. If the store is busy, it does nothing and retries on a later call.
+Yes. It acquires local then shared, skips both removal lists, and writes its sentinel only after success. A busy store retries on a later call. Startup recap retirement is separately locked; missing-index reads return an in-memory placeholder instead of bootstrapping an index outside the lock.
 
 **Q: Why does a shared removal create `.ocl-removed`?**
 OpenPI preserves topic files when removing an index entry. In the shared store it records that intentional removal using current openclaude-memory's `.ocl-removed` convention, preventing its repair command from re-indexing the file. Writing that topic again clears the tombstone.
+
+**Q: Can two local sessions write at once?** Local mutations refuse contention after about 500 ms rather than waiting indefinitely or writing unlocked. Shared mode waits about 2 s and retries once after a 1 s delay. Retry busy results; each mutation retains its acquired directory if config changes during the wait.
+
+**Q: Can a new topic overwrite an unrelated unindexed file?** No. Disk collisions are checked too. An unindexed regular file is reused only when its frontmatter name matches the requested topic; otherwise a free numeric suffix is selected.
+
+**Q: Does replace keep an outdated description?** No. Both modes refresh name, description, and last-updated metadata, preserving creation and unrelated fields. Failed index publication attempts to restore the previous topic/index rather than silently leaving changed content after a reported failure.
+
+**Q: Which co-tenant checks were run?** pi 0.99.1 and pi 1.0.0 pass 134 core tests, 12 real-loader checks, and typecheck (the lockfile/CI dev baseline is 1.0.0). The OpenCode sibling's real-process OpenCode/pi writer check also passes, preserving bodies, pins, removals, foreign entries, and cleanup. Both implementations must be updated; older published versions may retain the audited unlocked startup paths.

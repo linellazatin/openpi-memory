@@ -85,10 +85,10 @@ await ok('registers /memory command', () => {
   assert.ok(ext.commands.has('memory'), 'missing /memory command');
 });
 
-// 4. session_start bootstraps the memory store
-await ok('session_start bootstraps MEMORY.md and memory.jsonc', async () => {
+// 4. session_start creates config, keeping missing index reads read-only.
+await ok('session_start creates config without an unlocked index write', async () => {
   for (const h of ext.handlers.get('session_start') ?? []) await h();
-  assert.ok(fs.existsSync(path.join(AGENT_DIR, 'memory', 'MEMORY.md')), 'MEMORY.md not created');
+  assert.ok(!fs.existsSync(path.join(AGENT_DIR, 'memory', 'MEMORY.md')), 'index should only be created by a locked mutation');
   assert.ok(fs.existsSync(path.join(AGENT_DIR, 'memory.jsonc')), 'memory.jsonc not created');
 });
 

@@ -8,7 +8,7 @@ Understanding this is important before configuring or depending on memory behavi
 
 In pi, there is no mechanism to inject content once at session start and have it remain visible for the entire session. Every turn, pi constructs the system prompt from scratch. Content that is not re-injected on a given turn is **not present in the system prompt for that turn's LLM call**.
 
-This is fundamentally different from tools like opencode, where `system.transform` fires on every internal LLM call and can maintain a persistent block throughout a session.
+OpenCode also reconstructs prompts per model request. Current openclaude-memory attaches its block on every `system.transform` call; its similarly named interval controls disk refresh, not visibility. pi's scheduled injection behavior remains unchanged. Only storage is shared; each harness keeps local config and its own injection semantics.
 
 ## How this extension works around it
 
@@ -37,7 +37,7 @@ On skipped turns, `## Global Memory` is **absent from the system prompt entirely
 
 - **Context compaction resets injection.** When context is compacted (`session_before_compact`), the injection state resets so the first turn after compaction always re-injects, regardless of where the turn counter was. The compaction handoff (if enabled) is also injected on that first post-compaction turn.
 
-- **`session_start` does not inject anything.** It only bootstraps the memory directory and files if they are missing, and resets the injection state flags. No content reaches the LLM at session start.
+- **`session_start` does not inject anything.** It reads/creates local config, reads a missing index in memory, awaits locked retirement of the old unpinned recap where needed, and resets injection state. The first locked mutation creates a missing index.
 
 ## Why not inject on every turn by default?
 

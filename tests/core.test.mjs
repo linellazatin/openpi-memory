@@ -612,6 +612,15 @@ await test('readTopicContent: returns body without frontmatter', async () => {
   assert.ok(body.includes('192.168.1.100'), 'content present');
 });
 
+await test('readTopicContent: strips CRLF frontmatter', async () => {
+  const filename = 'crlf-topic.md';
+  fs.writeFileSync(path.join(getMemoryDir(), filename), '---\r\nname: "CRLF"\r\ndescription: "d"\r\n---\r\n\r\nbody line\r\n', 'utf8');
+  const body = readTopicContent(filename);
+  assert.ok(!body.startsWith('---'), 'CRLF frontmatter stripped');
+  assert.ok(body.includes('body line'), 'body present');
+  fs.unlinkSync(path.join(getMemoryDir(), filename));
+});
+
 await test('readTopicContent: missing file returns not-found message', async () => {
   const body = readTopicContent('nonexistent.md');
   assert.ok(body.includes('not found'), 'not-found message');
@@ -1206,7 +1215,7 @@ await test('retireRecapEntries: removes recap index line from local + shared, pr
     fs.writeFileSync(path.join(dir, 'keep-me.md'), '---\nname: Keep Me\n---\nbody', 'utf8');
   }
 
-  retireRecapEntries();
+  await retireRecapEntries();
 
   for (const dir of [LEGACY_DIR_PATH, SHARED_DIR_PATH]) {
     const idx = fs.readFileSync(path.join(dir, 'MEMORY.md'), 'utf8');
@@ -1218,7 +1227,7 @@ await test('retireRecapEntries: removes recap index line from local + shared, pr
 
 await test('retireRecapEntries: idempotent and a no-op when no recap entry exists', async () => {
   const before = fs.readFileSync(path.join(LEGACY_DIR_PATH, 'MEMORY.md'), 'utf8');
-  retireRecapEntries();
+  await retireRecapEntries();
   const after = fs.readFileSync(path.join(LEGACY_DIR_PATH, 'MEMORY.md'), 'utf8');
   assert.equal(after, before, 'second run changes nothing');
 });
@@ -1457,8 +1466,149 @@ await test('index browser and search ignore entries beyond the byte limit', asyn
 });
 
 // ═══════════════════════════════════════════════════════════
+await test('missing index reads stay read-only', () => {
+  writeRules('{ "shared_dir": false }');
+  const index = getMemoryIndex();
+  const before = fs.readFileSync(index);
+  fs.unlinkSync(index);
+  try {
+    assert.ok(readMemoryIndex(300).includes('Memory Index'));
+    assert.ok(!fs.existsSync(index), 'only locked mutation paths may create the index');
+  } finally { fs.writeFileSync(index, before); }
+});
+
+await test('retired recap cleanup refuses a co-tenant lock', async () => {
+  const index = path.join(SHARED_DIR_PATH, 'MEMORY.md');
+  const before = fs.readFileSync(index);
+  const fixture = '# Memory Index\n\n- [recap](last-session-recap.md) 2026-10-01 -- retired\n- [Keep](keep.md) -- keep\n';
+  fs.writeFileSync(index, fixture);
+  const lock = path.join(SHARED_DIR_PATH, '.lock');
+  fs.writeFileSync(lock, `${process.pid}\t${Date.now()}\tco-tenant`);
+  try {
+    await retireRecapEntries();
+    assert.equal(fs.readFileSync(index, 'utf8'), fixture);
+  } finally { fs.unlinkSync(lock); fs.writeFileSync(index, before); }
+});
+
+await test('unindexed filename collisions preserve a different topic', async () => {
+  writeRules('{ "shared_dir": false }');
+  await executeWriteMemory({ topic: 'Owner+Audit', content: 'original', summary: 'original' });
+  await executeRemoveMemory({ topic: 'Owner+Audit' });
+  const file = path.join(getMemoryDir(), 'owneraudit.md');
+  const before = fs.readFileSync(file, 'utf8');
+  await executeWriteMemory({ topic: 'OwnerAudit', content: 'unrelated', summary: 'unrelated' });
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
+  assert.ok(readIndex().includes('(owneraudit-2.md)'));
+});
+
+await test('local lock wait is bounded and never writes unlocked', async () => {
+  writeRules('{ "shared_dir": false }');
+  const lock = path.join(getMemoryDir(), '.lock');
+  fs.writeFileSync(lock, `${process.pid}\t${Date.now()}\tlocal`);
+  const releaseTimer = setTimeout(() => fs.rmSync(lock, { force: true }), 1000);
+  try {
+    const result = await executeWriteMemory({ topic: 'Local Busy Audit', content: 'bad', summary: 'bad' });
+    assert.match(result, /busy/i);
+    assert.ok(!readIndex().includes('(local-busy-audit.md)'));
+  } finally { clearTimeout(releaseTimer); fs.rmSync(lock, { force: true }); }
+});
+
+await test('stale lock recheck preserves a replacement live holder', async () => {
+  writeRules('{ "shared_dir": true }');
+  getMemoryDir();
+  const lock = path.join(SHARED_DIR_PATH, '.lock');
+  fs.writeFileSync(lock, '999999\t0\tdead');
+  const old = new Date(Date.now() - 20000);
+  fs.utimesSync(lock, old, old);
+  const kill = process.kill;
+  const replacement = `${process.pid}\t${Date.now()}\treplacement`;
+  process.kill = (pid, signal) => {
+    if (pid === 999999) {
+      fs.unlinkSync(lock);
+      fs.writeFileSync(lock, replacement);
+      throw Object.assign(new Error('dead'), { code: 'ESRCH' });
+    }
+    return kill(pid, signal);
+  };
+  try {
+    const result = await executeWriteMemory({ topic: 'Reclaimer Audit', content: 'bad', summary: 'bad' });
+    assert.match(result, /busy/i);
+    assert.equal(fs.readFileSync(lock, 'utf8'), replacement);
+  } finally { process.kill = kill; fs.rmSync(lock, { force: true }); }
+});
+
+// ═══════════════════════════════════════════════════════════
+await test('updated metadata is recoverable from the topic frontmatter', async () => {
+  writeRules('{ "shared_dir": false }');
+  await executeWriteMemory({ topic: 'Metadata Recovery Audit', content: 'old', summary: 'old' });
+  await executeWriteMemory({ topic: 'Metadata Recovery Audit', content: 'new', summary: 'new summary', mode: 'replace' });
+  const text = fs.readFileSync(path.join(getMemoryDir(), 'metadata-recovery-audit.md'), 'utf8');
+  assert.ok(text.includes('description: "new summary"'));
+  assert.ok(!text.includes('\nold\n'));
+});
+
+await test('index commit failures roll back a topic replacement', async () => {
+  writeRules('{ "shared_dir": false }');
+  await executeWriteMemory({ topic: 'Rollback Audit', content: 'original', summary: 'original' });
+  const topic = path.join(getMemoryDir(), 'rollback-audit.md');
+  const before = fs.readFileSync(topic, 'utf8');
+  const indexBefore = readIndex();
+  const index = getMemoryIndex();
+  const rename = fs.renameSync;
+  fs.renameSync = (from, to) => { if (to === index) throw new Error('injected index failure'); return rename(from, to); };
+  try { await assert.rejects(executeWriteMemory({ topic: 'Rollback Audit', content: 'replacement', summary: 'new', mode: 'replace' }), /index failure/); }
+  finally { fs.renameSync = rename; }
+  assert.equal(fs.readFileSync(topic, 'utf8'), before);
+  assert.equal(readIndex(), indexBefore);
+});
+
+await test('bounded index reads refuse a symlink swapped after the candidate check', () => {
+  writeRules('{ "shared_dir": false }');
+  const index = getMemoryIndex();
+  const before = fs.readFileSync(index);
+  const outside = path.join(TMP, 'outside-index.md');
+  fs.writeFileSync(outside, '- [PRIVATE_MARKER](private.md) -- private\n');
+  const lstat = fs.lstatSync;
+  let swapped = false;
+  fs.lstatSync = (file, ...args) => {
+    const stat = lstat(file, ...args);
+    if (file === index && !swapped) {
+      fs.unlinkSync(index);
+      fs.symlinkSync(outside, index);
+      swapped = true;
+    }
+    return stat;
+  };
+  try {
+    assert.throws(() => readIndexEntries());
+    assert.ok(!String(readMemoryIndex(300)).includes('PRIVATE_MARKER'));
+  } finally { fs.lstatSync = lstat; fs.unlinkSync(index); fs.writeFileSync(index, before); }
+});
+
+// ═══════════════════════════════════════════════════════════
 // Results
 // ═══════════════════════════════════════════════════════════
+
+await test('store and config FIFO reads are refused without blocking', async () => {
+  if (process.platform === 'win32') return;
+  const { spawnSync } = await import('node:child_process');
+  const dir = fs.mkdtempSync(path.join(TMP, 'fifo-read-'));
+  const script = `import assert from 'node:assert/strict'; import fs from 'node:fs'; import path from 'node:path'; import { execFileSync } from 'node:child_process'; const c = await import(${JSON.stringify(new URL('../extensions/memory-core.mjs', import.meta.url).href)}); const index = c.getMemoryIndex(); fs.mkdirSync(path.dirname(index), { recursive: true }); execFileSync('mkfifo', [index]); await assert.rejects(c.executeWriteMemory({ topic: 'FIFO Probe', content: 'body', summary: 'body' }), /regular/); fs.unlinkSync(c.MEMORY_RULES); execFileSync('mkfifo', [c.MEMORY_RULES]); assert.equal(c.parseRules().maxLines, 300);`;
+  try {
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, PI_CODING_AGENT_DIR: dir, PI_SHARED_MEMORY_HOME: dir }, timeout: 2000 });
+    assert.equal(child.status, 0, child.error?.message || child.stderr.toString());
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+await test('exclusive config publication preserves a racing creator', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const dir = fs.mkdtempSync(path.join(TMP, 'config-race-'));
+  const script = `import assert from 'node:assert/strict'; import fs from 'node:fs'; const c = await import(${JSON.stringify(new URL('../extensions/memory-core.mjs', import.meta.url).href)}); const write = fs.writeFileSync; const link = fs.linkSync; let raced = false; const create = () => { if (!raced) { raced = true; write(c.MEMORY_RULES, '{ "max_lines": 234 }'); } }; fs.writeFileSync = (file, ...args) => { if (file === c.MEMORY_RULES) create(); return write(file, ...args); }; fs.linkSync = (from, to) => { if (to === c.MEMORY_RULES) create(); return link(from, to); }; assert.equal(c.parseRules().maxLines, 234); assert.equal(JSON.parse(fs.readFileSync(c.MEMORY_RULES, 'utf8')).max_lines, 234);`;
+  try {
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, PI_CODING_AGENT_DIR: dir, PI_SHARED_MEMORY_HOME: dir }, timeout: 2000 });
+    assert.equal(child.status, 0, child.error?.message || child.stderr.toString());
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
 
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

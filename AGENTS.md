@@ -32,11 +32,18 @@ Top-level layout:
 
 Recent versions noted in the README:
 
+- **v0.3.9** — shared-store coordination with openclaude-memory; read-only missing-index reads, locked async recap retirement, directory-pinned mutations, bounded local contention, no-follow/bounded reads, per-file rollback, refreshed frontmatter metadata, and exclusive config publication. Verified against pi 0.99.1 and pi 1.0.0 (API additions only) with no source changes.
 - **v0.3.8** — pi 0.99 re-assessment; verified against pi 0.87.0–0.99.1 with no source changes; supported floor raised to `>=0.87.0` and `engines.node` to `>=22.19.0`; host-load smoke test gained a built-in name-collision guard (skipped below pi 0.99).
 - **v0.3.7** — pi 0.87 compatibility; hooks verified against pi 0.84.2–0.87.0 with no source changes; added host-load smoke test through pi's real loader.
 - **v0.3.6** — shared-store hardening for `shared_dir`, including unsafe file handling, index collision handling, and unbo... (truncated in source).
 
 ## Testing and operational quirks
+
+- Missing-index reads stay in memory. Startup recap retirement is async and locked; await it before session-start processing finishes.
+- Mutations retain the acquired directory across config changes. Local contention refuses after about 500 ms; shared mode waits about 2 s and retries once after 1 s. Never bypass a busy lock.
+- Carry-over locks local then shared and respects both removal lists. Shared removal intent is recorded before deleting discoverability. New topics preserve unrelated unindexed slug owners.
+- Reads verify no-follow regular-file descriptors; previews/search are bounded after opening. Atomic writes flush/clean temporary files, and ordinary write failures attempt rollback. Do not claim multi-file crash atomicity or atomic compare-and-unlink leases.
+- Current baseline: 134 core checks, 12 real pi-loader checks, and typecheck on pi 0.99.1 and pi 1.0.0. OpenCode's optional real-process shared-writer check also exercises this core. Its per-request injection differs from pi's unchanged scheduled injection.
 
 - There are two test targets: `tests/core.test.mjs` and `tests/extension.test.mjs`. Run the narrowest relevant test before the full suite when changing behavior.
 - `npm test` chains both test files with `&&`, so a failure in the first stops the second.
