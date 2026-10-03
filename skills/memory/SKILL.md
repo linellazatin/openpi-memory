@@ -80,7 +80,7 @@ Always use `write_memory` — never edit `MEMORY.md` or topic files directly. To
 - Upserts the `MEMORY.md` index entry with the correct date and summary
 - Runs index maintenance (orphan removal, deduplication, stale stamping) after every write
 
-**`mode: "replace"`** — the topic holds a current state that should be replaced: hardware specs, environment config, a tool version, user preferences. Replaces the body and updates `last_updated` in frontmatter. No dated heading added.
+**`mode: "replace"`**: use for current state that supersedes the old body. Both modes refresh `name`, `description`, and `last_updated`, preserving `created` and unrelated fields. A new topic reuses an unindexed file only if its frontmatter name matches; unrelated slug owners receive separate numeric filenames.
 
 **`mode: "append"` (default)** — the topic is a log of discoveries, fixes, or incremental notes. Pass only the new fact or delta as `content`. Each entry is preserved with its date.
 
@@ -146,7 +146,7 @@ If the injected `## Global Memory` block contains a truncation warning (`memory 
 1. Read `MEMORY.md` in full to assess all entries.
 2. Identify candidates for removal in this order:
    - **Skip immediately**: any entry with `[pin]` — never a removal candidate
-   - **Remove without judgment**: entry points to a file that no longer exists; or two entries share a filename (keep the more recent date, remove the other). Use `remove_memory` for these.
+   - **Maintenance**: updates clean missing files and duplicate filenames. Do not use `remove_memory` merely to discard one duplicate record; it removes topic discoverability, not just a duplicate line.
    - **Remove only if clearly obsolete**: topic was session-specific and no longer applies; topic is fully superseded by a newer broader entry. When in doubt, keep it. Use `remove_memory`.
    - **`[stale?]` entries**: review first — highest priority candidates.
 3. If all entries are still valid but the count is high, consolidate: merge two closely related topic files into one via `write_memory`, then `remove_memory` the redundant entry.
@@ -219,3 +219,5 @@ If no `## Memory Rules` block is in your context, read `~/.pi/agent/memory.jsonc
 ```
 
 Config scalars are consumed by the extension and never injected into the system prompt. Changes take effect on the next user prompt — no reload required.
+
+Missing-index reads do not create files. Mutations retain their acquired directory: local contention refuses after about 500 ms; shared mode waits about 2 s and retries once after 1 s. Retry busy results instead of bypassing the lock. Startup recap retirement and carry-over are locked; shared removals record `.ocl-removed` before deleting index lines, and migration respects both removal lists. Files must be safe regular `.md` files. Writes are atomic per file and ordinary failures attempt rollback; abrupt termination may leave recoverable drift. The OpenCode sibling attaches memory on every model request, while this extension's scheduled pi injection remains unchanged.
