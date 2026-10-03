@@ -18,7 +18,9 @@ The date stamp is a full ISO 8601 datetime with the host timezone offset (e.g. `
 
 `write_memory` requires a non-empty topic that produces a filename slug; topic names cannot contain newlines or Markdown link delimiters (`[`, `]`, `(`, `)`). `MEMORY.md` is reserved for the index and cannot be a topic. Its `summary` is normalized to one line and capped at 500 characters before it is written to this index.
 
-When editing files manually, use regular `.md` topic files only. Hidden files, symbolic links, path-like names, and `MEMORY.md` index links are ignored rather than treated as memories.
+When editing files manually, use regular `.md` topic files only. Hidden files, symbolic links, path-like names, and `MEMORY.md` index links are ignored rather than treated as memories. Reads refuse FIFOs without blocking. Local config may resolve through a trusted symlink to a regular file; initial publication preserves a racing creator's config and existing legacy backups.
+
+Both write modes refresh `name`, `description`, and `last_updated`, preserving `created` and other fields. A new topic cannot claim an unrelated disk slug, even if unindexed; reuse requires matching frontmatter identity. Missing-index reads stay in memory until a locked write. Local contention refuses after about 500 ms; shared mode waits about 2 s and retries after 1 s. Normal write failures attempt rollback; atomicity remains per file and abrupt termination may require recovery.
 
 ## Stale flagging
 
