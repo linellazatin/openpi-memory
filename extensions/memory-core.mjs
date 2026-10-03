@@ -202,12 +202,12 @@ function maybeCarryOverLocalMemory() {
 function mergeLocalIntoSharedDir(sharedDir) {
   const sharedIndexPath = path.join(sharedDir, 'MEMORY.md');
   const sharedRaw = fs.existsSync(sharedIndexPath)
-    ? fs.readFileSync(sharedIndexPath, 'utf8')
+    ? readStoreFileSync(sharedIndexPath)
     : INITIAL_MEMORY;
   const sharedFilesOnDisk = new Set(fs.readdirSync(sharedDir));
   const sharedIndexed = new Set(sharedRaw.split('\n').map(parseIndexLine).filter(Boolean).map(entry => entry.filename));
 
-  const localLines = fs.readFileSync(path.join(LEGACY_MEMORY_DIR, 'MEMORY.md'), 'utf8').split('\n');
+  const localLines = readStoreFileSync(path.join(LEGACY_MEMORY_DIR, 'MEMORY.md')).split('\n');
   const removed = new Set([...readRemovedList(LEGACY_MEMORY_DIR), ...readRemovedList(sharedDir)]);
   const toAppend = [];
 
@@ -221,7 +221,7 @@ function mergeLocalIntoSharedDir(sharedDir) {
     const destName = resolveDestName(srcPath, sharedDir, parsed.filename, sharedFilesOnDisk);
     if (removed.has(destName)) continue;
     if (!sharedFilesOnDisk.has(destName)) {
-      atomicWriteFileSync(path.join(sharedDir, destName), fs.readFileSync(srcPath, 'utf8'));
+      atomicWriteFileSync(path.join(sharedDir, destName), readStoreFileSync(srcPath));
       sharedFilesOnDisk.add(destName);
     }
     if (!sharedIndexed.has(destName)) {
@@ -271,7 +271,7 @@ function isRegularFile(filePath) {
 
 function filesEqual(pathA, pathB) {
   return isRegularFile(pathA) && isRegularFile(pathB) &&
-    fs.readFileSync(pathA, 'utf8') === fs.readFileSync(pathB, 'utf8');
+    readStoreFileSync(pathA) === readStoreFileSync(pathB);
 }
 
 // Test-only: reset the carry-over guard to simulate a fresh process start.
@@ -323,9 +323,17 @@ function removedListPath(memoryDir) {
   return path.join(memoryDir, '.ocl-removed');
 }
 
+function readStoreFileSync(filePath) {
+  const fd = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+  try {
+    if (!fs.fstatSync(fd).isFile()) throw new Error(`Unsafe non-regular file: ${filePath}`);
+    return fs.readFileSync(fd, 'utf8');
+  } finally { fs.closeSync(fd); }
+}
+
 function readRemovedList(memoryDir) {
   try {
-    return new Set(fs.readFileSync(removedListPath(memoryDir), 'utf8').split('\n')
+    return new Set(readStoreFileSync(removedListPath(memoryDir)).split('\n')
       .filter(isSafeTopicFilename));
   } catch (err) { if (err.code === 'ENOENT') return new Set(); throw err; }
 }
@@ -347,13 +355,13 @@ function removeFromRemovedList(memoryDir, filename) {
 // character may be incomplete when truncating; that harmless replacement character is preferable
 // to synchronously loading an unbounded shared-memory file into pi's process.
 function readTextPrefixSync(filePath, maxBytes) {
-  const size = fs.statSync(filePath).size;
-  if (size <= maxBytes) return { text: fs.readFileSync(filePath, 'utf8'), truncated: false };
-  const fd = fs.openSync(filePath, 'r');
+  const fd = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
   try {
-    const buffer = Buffer.alloc(maxBytes);
-    const bytesRead = fs.readSync(fd, buffer, 0, maxBytes, 0);
-    return { text: buffer.subarray(0, bytesRead).toString('utf8'), truncated: true };
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) throw new Error(`Unsafe non-regular file: ${filePath}`);
+    const buffer = Buffer.alloc(Math.min(stat.size, maxBytes));
+    const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+    return { text: buffer.subarray(0, bytesRead).toString('utf8'), truncated: stat.size > maxBytes };
   } finally {
     fs.closeSync(fd);
   }
@@ -575,7 +583,7 @@ export async function retireRecapEntries() {
     if (!fs.existsSync(indexPath)) continue;
     try {
       const result = await withLock(() => {
-        const lines = fs.readFileSync(indexPath, 'utf8').split('\n');
+        const lines = readStoreFileSync(indexPath).split('\n');
         const kept = lines.filter(line => {
           const parsed = parseIndexLine(line);
           return !(parsed && parsed.filename === `${RESERVED_TOPIC_SLUG}.md` && !parsed.rest.split(' -- ')[0].includes('[pin]'));
@@ -635,27 +643,6 @@ function nowIso() {
     `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
     `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}${tz}`
   );
-}
-
-/**
- * Update (or insert) the last_updated field in YAML frontmatter.
- * Frontmatter is the block between the opening --- and closing ---.
- * Inserts after the created: line if last_updated is not yet present.
- */
-function updateFrontmatterLastUpdated(fileContent, datetime) {
-  const fmMatch = fileContent.match(/^---\n([\s\S]*?)\n---\n/);
-  if (!fmMatch) return fileContent;
-
-  let fm = fmMatch[1];
-  const rest = fileContent.slice(fmMatch[0].length);
-
-  if (fm.includes('last_updated:')) {
-    fm = fm.replace(/^last_updated:.*$/m, `last_updated: ${datetime}`);
-  } else {
-    fm = fm.replace(/^(created:.*)$/m, `$1\nlast_updated: ${datetime}`);
-  }
-
-  return `---\n${fm}\n---\n${rest}`;
 }
 
 function daysSince(dateStr) {
@@ -935,7 +922,7 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
 
     // Read index once — reused for topic-name lookup and upsert
     const rawIndex = fs.existsSync(memoryIndex)
-      ? fs.readFileSync(memoryIndex, 'utf8')
+      ? readStoreFileSync(memoryIndex)
       : INITIAL_MEMORY;
 
     // Preserve the indexed filename for an exact existing topic name. A different
@@ -971,31 +958,39 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
     if (fs.existsSync(topicPath) && !isRegularFile(topicPath))
       return `Invalid topic: "${filename}" is not a regular file.`;
 
-    let isNew = false;
+    const previous = fs.existsSync(topicPath) ? readStoreFileSync(topicPath) : null;
+    const isNew = previous === null;
     const dt = nowIso();
-    if (!fs.existsSync(topicPath)) {
-      isNew = true;
-      const frontmatter =
-        `---\nname: ${JSON.stringify(topic)}\ndescription: ${JSON.stringify(summary)}\ncreated: ${dt}\nlast_updated: ${dt}\nmetadata:\n  node_type: memory\n---\n\n`;
-      atomicWriteFileSync(topicPath, frontmatter + content + '\n');
-    } else if (replace) {
-      // Replace body content; preserve frontmatter and update last_updated
-      const existing = fs.readFileSync(topicPath, 'utf8');
-      const updated = updateFrontmatterLastUpdated(existing, dt);
-      // Strip everything after the closing frontmatter --- and replace with new content
-      const bodyStart = updated.indexOf('---\n', 4) + 4; // skip past the closing ---
-      atomicWriteFileSync(topicPath, updated.slice(0, bodyStart) + '\n' + content + '\n');
-    } else {
-      const existing = fs.readFileSync(topicPath, 'utf8');
-      const updated = updateFrontmatterLastUpdated(existing, dt);
-      atomicWriteFileSync(topicPath, updated + `\n## ${today()}\n\n` + content + '\n');
+    const match = previous?.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
+    let fm = match ? match[1].replace(/\r\n/g, '\n') : 'metadata:\n  node_type: memory';
+    const fields = { name: JSON.stringify(topic), description: JSON.stringify(summary), last_updated: dt };
+    if (!/^created:/m.test(fm)) fields.created = dt;
+    for (const [key, value] of Object.entries(fields)) {
+      const re = new RegExp(`^${key}:.*$`, 'm');
+      fm = re.test(fm) ? fm.replace(re, () => `${key}: ${value}`) : fm + `\n${key}: ${value}`;
     }
-
-    let lines = rawIndex.split('\n');
-    lines = upsertIndexLine(lines, filename, topic, summary, pin);
-    lines = maintainIndex(lines, parseRules(), memoryDir);
-    atomicWriteFileSync(memoryIndex, lines.join('\n'));
-    if (memoryDir === SHARED_MEMORY_DIR) removeFromRemovedList(memoryDir, filename);
+    const oldBody = match ? previous.slice(match[0].length) : previous || '';
+    const body = isNew || replace ? '\n' + content + '\n' : oldBody + `\n## ${today()}\n\n${content}\n`;
+    const wasRemoved = memoryDir === SHARED_MEMORY_DIR && readRemovedList(memoryDir).has(filename);
+    let indexWritten = false;
+    try {
+      atomicWriteFileSync(topicPath, `---\n${fm}\n---\n${body}`);
+      let lines = upsertIndexLine(rawIndex.split('\n'), filename, topic, summary, pin);
+      lines = maintainIndex(lines, parseRules(), memoryDir);
+      atomicWriteFileSync(memoryIndex, lines.join('\n'));
+      indexWritten = true;
+      if (memoryDir === SHARED_MEMORY_DIR) removeFromRemovedList(memoryDir, filename);
+    } catch (error) {
+      try {
+        if (indexWritten) atomicWriteFileSync(memoryIndex, rawIndex);
+        if (previous !== null) atomicWriteFileSync(topicPath, previous);
+        else if (fs.existsSync(topicPath)) fs.unlinkSync(topicPath);
+        if (wasRemoved) addToRemovedList(memoryDir, filename);
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], `Memory update and rollback failed; inspect ${topicPath} and ${memoryIndex}.`);
+      }
+      throw error;
+    }
 
     return `${isNew ? 'Created' : 'Updated'} memory topic "${topic}" (${filename}).`;
   });
@@ -1007,7 +1002,7 @@ export async function executeRemoveMemory({ topic }) {
     const memoryIndex = path.join(memoryDir, 'MEMORY.md');
     if (!fs.existsSync(memoryIndex)) return 'No memory index found.';
 
-    let lines = fs.readFileSync(memoryIndex, 'utf8').split('\n');
+    let lines = readStoreFileSync(memoryIndex).split('\n');
     const found = findIndexEntry(lines, topic);
 
     if (!found) return `No entry found matching "${topic}".`;
@@ -1031,7 +1026,7 @@ export async function executePinMemory({ topic, pin }) {
     const memoryIndex = path.join(memoryDir, 'MEMORY.md');
     if (!fs.existsSync(memoryIndex)) return 'No memory index found.';
 
-    let lines = fs.readFileSync(memoryIndex, 'utf8').split('\n');
+    let lines = readStoreFileSync(memoryIndex).split('\n');
     const found = findIndexEntry(lines, topic);
 
     if (!found) return `No entry found matching "${topic}".`;

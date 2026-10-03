@@ -1529,6 +1529,54 @@ await test('stale lock recheck preserves a replacement live holder', async () =>
 });
 
 // ═══════════════════════════════════════════════════════════
+await test('updated metadata is recoverable from the topic frontmatter', async () => {
+  writeRules('{ "shared_dir": false }');
+  await executeWriteMemory({ topic: 'Metadata Recovery Audit', content: 'old', summary: 'old' });
+  await executeWriteMemory({ topic: 'Metadata Recovery Audit', content: 'new', summary: 'new summary', mode: 'replace' });
+  const text = fs.readFileSync(path.join(getMemoryDir(), 'metadata-recovery-audit.md'), 'utf8');
+  assert.ok(text.includes('description: "new summary"'));
+  assert.ok(!text.includes('\nold\n'));
+});
+
+await test('index commit failures roll back a topic replacement', async () => {
+  writeRules('{ "shared_dir": false }');
+  await executeWriteMemory({ topic: 'Rollback Audit', content: 'original', summary: 'original' });
+  const topic = path.join(getMemoryDir(), 'rollback-audit.md');
+  const before = fs.readFileSync(topic, 'utf8');
+  const indexBefore = readIndex();
+  const index = getMemoryIndex();
+  const rename = fs.renameSync;
+  fs.renameSync = (from, to) => { if (to === index) throw new Error('injected index failure'); return rename(from, to); };
+  try { await assert.rejects(executeWriteMemory({ topic: 'Rollback Audit', content: 'replacement', summary: 'new', mode: 'replace' }), /index failure/); }
+  finally { fs.renameSync = rename; }
+  assert.equal(fs.readFileSync(topic, 'utf8'), before);
+  assert.equal(readIndex(), indexBefore);
+});
+
+await test('bounded index reads refuse a symlink swapped after the candidate check', () => {
+  writeRules('{ "shared_dir": false }');
+  const index = getMemoryIndex();
+  const before = fs.readFileSync(index);
+  const outside = path.join(TMP, 'outside-index.md');
+  fs.writeFileSync(outside, '- [PRIVATE_MARKER](private.md) -- private\n');
+  const lstat = fs.lstatSync;
+  let swapped = false;
+  fs.lstatSync = (file, ...args) => {
+    const stat = lstat(file, ...args);
+    if (file === index && !swapped) {
+      fs.unlinkSync(index);
+      fs.symlinkSync(outside, index);
+      swapped = true;
+    }
+    return stat;
+  };
+  try {
+    assert.throws(() => readIndexEntries());
+    assert.ok(!String(readMemoryIndex(300)).includes('PRIVATE_MARKER'));
+  } finally { fs.lstatSync = lstat; fs.unlinkSync(index); fs.writeFileSync(index, before); }
+});
+
+// ═══════════════════════════════════════════════════════════
 // Results
 // ═══════════════════════════════════════════════════════════
 
