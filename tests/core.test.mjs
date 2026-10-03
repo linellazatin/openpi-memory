@@ -1206,7 +1206,7 @@ await test('retireRecapEntries: removes recap index line from local + shared, pr
     fs.writeFileSync(path.join(dir, 'keep-me.md'), '---\nname: Keep Me\n---\nbody', 'utf8');
   }
 
-  retireRecapEntries();
+  await retireRecapEntries();
 
   for (const dir of [LEGACY_DIR_PATH, SHARED_DIR_PATH]) {
     const idx = fs.readFileSync(path.join(dir, 'MEMORY.md'), 'utf8');
@@ -1218,7 +1218,7 @@ await test('retireRecapEntries: removes recap index line from local + shared, pr
 
 await test('retireRecapEntries: idempotent and a no-op when no recap entry exists', async () => {
   const before = fs.readFileSync(path.join(LEGACY_DIR_PATH, 'MEMORY.md'), 'utf8');
-  retireRecapEntries();
+  await retireRecapEntries();
   const after = fs.readFileSync(path.join(LEGACY_DIR_PATH, 'MEMORY.md'), 'utf8');
   assert.equal(after, before, 'second run changes nothing');
 });
@@ -1454,6 +1454,78 @@ await test('index browser and search ignore entries beyond the byte limit', asyn
   } finally {
     fs.writeFileSync(getMemoryIndex(), index, 'utf8');
   }
+});
+
+// ═══════════════════════════════════════════════════════════
+await test('missing index reads stay read-only', () => {
+  writeRules('{ "shared_dir": false }');
+  const index = getMemoryIndex();
+  const before = fs.readFileSync(index);
+  fs.unlinkSync(index);
+  try {
+    assert.ok(readMemoryIndex(300).includes('Memory Index'));
+    assert.ok(!fs.existsSync(index), 'only locked mutation paths may create the index');
+  } finally { fs.writeFileSync(index, before); }
+});
+
+await test('retired recap cleanup refuses a co-tenant lock', async () => {
+  const index = path.join(SHARED_DIR_PATH, 'MEMORY.md');
+  const before = fs.readFileSync(index);
+  const fixture = '# Memory Index\n\n- [recap](last-session-recap.md) 2026-10-01 -- retired\n- [Keep](keep.md) -- keep\n';
+  fs.writeFileSync(index, fixture);
+  const lock = path.join(SHARED_DIR_PATH, '.lock');
+  fs.writeFileSync(lock, `${process.pid}\t${Date.now()}\tco-tenant`);
+  try {
+    await retireRecapEntries();
+    assert.equal(fs.readFileSync(index, 'utf8'), fixture);
+  } finally { fs.unlinkSync(lock); fs.writeFileSync(index, before); }
+});
+
+await test('unindexed filename collisions preserve a different topic', async () => {
+  writeRules('{ "shared_dir": false }');
+  await executeWriteMemory({ topic: 'Owner+Audit', content: 'original', summary: 'original' });
+  await executeRemoveMemory({ topic: 'Owner+Audit' });
+  const file = path.join(getMemoryDir(), 'owneraudit.md');
+  const before = fs.readFileSync(file, 'utf8');
+  await executeWriteMemory({ topic: 'OwnerAudit', content: 'unrelated', summary: 'unrelated' });
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
+  assert.ok(readIndex().includes('(owneraudit-2.md)'));
+});
+
+await test('local lock wait is bounded and never writes unlocked', async () => {
+  writeRules('{ "shared_dir": false }');
+  const lock = path.join(getMemoryDir(), '.lock');
+  fs.writeFileSync(lock, `${process.pid}\t${Date.now()}\tlocal`);
+  const releaseTimer = setTimeout(() => fs.rmSync(lock, { force: true }), 1000);
+  try {
+    const result = await executeWriteMemory({ topic: 'Local Busy Audit', content: 'bad', summary: 'bad' });
+    assert.match(result, /busy/i);
+    assert.ok(!readIndex().includes('(local-busy-audit.md)'));
+  } finally { clearTimeout(releaseTimer); fs.rmSync(lock, { force: true }); }
+});
+
+await test('stale lock recheck preserves a replacement live holder', async () => {
+  writeRules('{ "shared_dir": true }');
+  getMemoryDir();
+  const lock = path.join(SHARED_DIR_PATH, '.lock');
+  fs.writeFileSync(lock, '999999\t0\tdead');
+  const old = new Date(Date.now() - 20000);
+  fs.utimesSync(lock, old, old);
+  const kill = process.kill;
+  const replacement = `${process.pid}\t${Date.now()}\treplacement`;
+  process.kill = (pid, signal) => {
+    if (pid === 999999) {
+      fs.unlinkSync(lock);
+      fs.writeFileSync(lock, replacement);
+      throw Object.assign(new Error('dead'), { code: 'ESRCH' });
+    }
+    return kill(pid, signal);
+  };
+  try {
+    const result = await executeWriteMemory({ topic: 'Reclaimer Audit', content: 'bad', summary: 'bad' });
+    assert.match(result, /busy/i);
+    assert.equal(fs.readFileSync(lock, 'utf8'), replacement);
+  } finally { process.kill = kill; fs.rmSync(lock, { force: true }); }
 });
 
 // ═══════════════════════════════════════════════════════════

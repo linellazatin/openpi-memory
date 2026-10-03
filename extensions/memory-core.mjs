@@ -172,19 +172,24 @@ export const INITIAL_RULES_JSONC = `{
 function maybeCarryOverLocalMemory() {
   if (_carryOverChecked) return;
   if (fs.existsSync(CARRY_OVER_SENTINEL)) { _carryOverChecked = true; return; }
-  if (!fs.existsSync(path.join(LEGACY_MEMORY_DIR, 'MEMORY.md'))) { _carryOverChecked = true; return; }
+  if (!fs.existsSync(path.join(LEGACY_MEMORY_DIR, 'MEMORY.md'))) return;
   try {
-    fs.mkdirSync(SHARED_MEMORY_DIR, { recursive: true });
-    const lockPath = path.join(SHARED_MEMORY_DIR, '.lock');
-    const token = tryAcquireLock(lockPath);
-    if (!token) return; // another shared writer owns the store; retry on a later call
+    const localLock = path.join(LEGACY_MEMORY_DIR, '.lock');
+    const localToken = tryAcquireLock(localLock);
+    if (!localToken) return;
     try {
-      mergeLocalIntoSharedDir(SHARED_MEMORY_DIR);
-      fs.writeFileSync(CARRY_OVER_SENTINEL, '');
-      _carryOverChecked = true;
-    } finally {
-      releaseLock(lockPath, token);
-    }
+      fs.mkdirSync(SHARED_MEMORY_DIR, { recursive: true });
+      const lockPath = path.join(SHARED_MEMORY_DIR, '.lock');
+      const token = tryAcquireLock(lockPath);
+      if (!token) return; // another shared writer owns the store; retry on a later call
+      try {
+        mergeLocalIntoSharedDir(SHARED_MEMORY_DIR);
+        atomicWriteFileSync(CARRY_OVER_SENTINEL, '');
+        _carryOverChecked = true;
+      } finally {
+        releaseLock(lockPath, token);
+      }
+    } finally { releaseLock(localLock, localToken); }
   } catch (err) {
     // best-effort — carry-over failure must never break normal operation, but log the trail
     logDiag('shared_dir carry-over failed', err);
@@ -203,15 +208,18 @@ function mergeLocalIntoSharedDir(sharedDir) {
   const sharedIndexed = new Set(sharedRaw.split('\n').map(parseIndexLine).filter(Boolean).map(entry => entry.filename));
 
   const localLines = fs.readFileSync(path.join(LEGACY_MEMORY_DIR, 'MEMORY.md'), 'utf8').split('\n');
+  const removed = new Set([...readRemovedList(LEGACY_MEMORY_DIR), ...readRemovedList(sharedDir)]);
   const toAppend = [];
 
   for (const line of localLines) {
     const parsed = parseIndexLine(line);
     if (!parsed) continue; // headers/blanks — destination keeps its own structure
+    if (removed.has(parsed.filename)) continue;
     const srcPath = path.join(LEGACY_MEMORY_DIR, parsed.filename);
     if (!isRegularFile(srcPath)) continue; // orphaned or unsafe local entry — skip
 
     const destName = resolveDestName(srcPath, sharedDir, parsed.filename, sharedFilesOnDisk);
+    if (removed.has(destName)) continue;
     if (!sharedFilesOnDisk.has(destName)) {
       atomicWriteFileSync(path.join(sharedDir, destName), fs.readFileSync(srcPath, 'utf8'));
       sharedFilesOnDisk.add(destName);
@@ -235,13 +243,13 @@ function mergeLocalIntoSharedDir(sharedDir) {
 // missing shared index entry can still be restored without copying the file.
 function resolveDestName(srcPath, sharedDir, filename, sharedFilesOnDisk) {
   const originalDest = path.join(sharedDir, filename);
-  if (!fs.existsSync(originalDest)) return filename; // no collision
+  if (!sharedFilesOnDisk.has(filename)) return filename; // no collision
 
   if (filesEqual(srcPath, originalDest)) return filename; // already there, identical
 
   const suffixed = filename.replace(/\.md$/, '-opim.md');
   const suffixedDest = path.join(sharedDir, suffixed);
-  if (!fs.existsSync(suffixedDest)) return suffixed;
+  if (!sharedFilesOnDisk.has(suffixed)) return suffixed;
   if (filesEqual(srcPath, suffixedDest)) return suffixed; // already migrated in a prior run
 
   // Exceedingly rare: both slots taken by different content — bump a counter.
@@ -254,7 +262,7 @@ function resolveDestName(srcPath, sharedDir, filename, sharedFilesOnDisk) {
 function isSafeTopicFilename(filename) {
   const lower = typeof filename === 'string' ? filename.toLowerCase() : '';
   return lower.endsWith('.md') && lower !== 'memory.md' && !filename.startsWith('.') &&
-    !/[\\/\[\]\(\)]/.test(filename) && !filename.includes('..');
+    !/[\\/\[\]\(\)\x00-\x1f\x7f]/.test(filename) && !filename.includes('..');
 }
 
 function isRegularFile(filePath) {
@@ -298,9 +306,17 @@ export function getMemoryIndex() {
  * write even if the process crashes or the write races with another writer.
  */
 function atomicWriteFileSync(filePath, content) {
-  const tmpPath = `${filePath}.tmp-${process.pid}`;
-  fs.writeFileSync(tmpPath, content, 'utf8');
-  fs.renameSync(tmpPath, filePath);
+  try { if (!fs.lstatSync(filePath).isFile()) throw new Error(`Unsafe non-regular file: ${filePath}`); }
+  catch (err) { if (err.code !== 'ENOENT') throw err; }
+  const tmpPath = `${filePath}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  try {
+    const fd = fs.openSync(tmpPath, 'wx', 0o600);
+    try { fs.writeFileSync(fd, content, 'utf8'); fs.fsyncSync(fd); }
+    finally { fs.closeSync(fd); }
+    fs.renameSync(tmpPath, filePath);
+  } finally {
+    try { fs.unlinkSync(tmpPath); } catch (err) { if (err.code !== 'ENOENT') throw err; }
+  }
 }
 
 function removedListPath(memoryDir) {
@@ -311,7 +327,7 @@ function readRemovedList(memoryDir) {
   try {
     return new Set(fs.readFileSync(removedListPath(memoryDir), 'utf8').split('\n')
       .filter(isSafeTopicFilename));
-  } catch { return new Set(); }
+  } catch (err) { if (err.code === 'ENOENT') return new Set(); throw err; }
 }
 
 function addToRemovedList(memoryDir, filename) {
@@ -519,15 +535,13 @@ export function decideCompactionAction(rules, handoff) {
 
 /**
  * Read MEMORY.md, truncating if over maxLines or MAX_BYTES.
- * Creates the file with INITIAL_MEMORY if missing.
+ * Returns INITIAL_MEMORY in-memory if missing; only locked writes create the file.
  */
 export function readMemoryIndex(maxLines) {
   try {
     const memoryDir = getMemoryDir();
     const memoryIndex = path.join(memoryDir, 'MEMORY.md');
     if (!fs.existsSync(memoryIndex)) {
-      fs.mkdirSync(memoryDir, { recursive: true });
-      atomicWriteFileSync(memoryIndex, INITIAL_MEMORY);
       return INITIAL_MEMORY;
     }
     if (!isRegularFile(memoryIndex)) {
@@ -555,17 +569,24 @@ export function readMemoryIndex(maxLines) {
 // index in BOTH the legacy and shared directories (so a later shared_dir toggle can't
 // resurrect it), without touching the topic file on disk. Idempotent — only rewrites an
 // index that actually still contains the line. Safe to call on every session start.
-export function retireRecapEntries() {
+export async function retireRecapEntries() {
   for (const dir of [LEGACY_MEMORY_DIR, SHARED_MEMORY_DIR]) {
     const indexPath = path.join(dir, 'MEMORY.md');
     if (!fs.existsSync(indexPath)) continue;
     try {
-      const lines = fs.readFileSync(indexPath, 'utf8').split('\n');
-      const kept = lines.filter(line => {
-        const parsed = parseIndexLine(line);
-        return !(parsed && parsed.filename === `${RESERVED_TOPIC_SLUG}.md`);
-      });
-      if (kept.length !== lines.length) atomicWriteFileSync(indexPath, kept.join('\n'));
+      const result = await withLock(() => {
+        const lines = fs.readFileSync(indexPath, 'utf8').split('\n');
+        const kept = lines.filter(line => {
+          const parsed = parseIndexLine(line);
+          return !(parsed && parsed.filename === `${RESERVED_TOPIC_SLUG}.md` && !parsed.rest.split(' -- ')[0].includes('[pin]'));
+        });
+        if (kept.length !== lines.length) {
+          if (dir === SHARED_MEMORY_DIR) addToRemovedList(dir, `${RESERVED_TOPIC_SLUG}.md`);
+          atomicWriteFileSync(indexPath, kept.join('\n'));
+        }
+        return true;
+      }, dir);
+      if (result === null) logDiag('recap cleanup deferred', LOCK_BUSY_MESSAGE);
     } catch (err) {
       logDiag('failed to retire last-session-recap index entries', err);
     }
@@ -832,7 +853,7 @@ function lockHolderAlive(lockPath, age) {
   let pid;
   try { pid = Number.parseInt(fs.readFileSync(lockPath, 'utf8').trim().split('\t')[0], 10); }
   catch { pid = NaN; }
-  if (!Number.isInteger(pid)) return age <= LOCK_STALE_HARD_MS;
+  if (!Number.isInteger(pid) || pid <= 0) return age <= LOCK_STALE_HARD_MS;
   try { process.kill(pid, 0); return true; }
   catch (err) { return err.code !== 'ESRCH'; }
 }
@@ -846,8 +867,12 @@ function tryAcquireLock(lockPath) {
     if (err.code !== 'EEXIST') throw err;
   }
   try {
-    const age = Date.now() - fs.statSync(lockPath).mtimeMs;
+    const stat = fs.lstatSync(lockPath);
+    if (!stat.isFile()) return null;
+    const age = Date.now() - stat.mtimeMs;
     if (age > LOCK_STALE_MS && !lockHolderAlive(lockPath, age)) {
+      const fresh = fs.lstatSync(lockPath);
+      if (fresh.ino !== stat.ino || fresh.mtimeMs !== stat.mtimeMs) return null;
       try { fs.unlinkSync(lockPath); } catch {}
       try {
         fs.writeFileSync(lockPath, token, { flag: 'wx' });
@@ -866,26 +891,26 @@ function releaseLock(lockPath, token) {
   } catch { /* lock was already released or replaced */ }
 }
 
-async function withLock(fn) {
-  const { sharedDir } = parseRules();
-  const memoryDir = getMemoryDir();
+async function withLock(fn, memoryDir = getMemoryDir()) {
+  const sharedDir = memoryDir === SHARED_MEMORY_DIR;
   fs.mkdirSync(memoryDir, { recursive: true });
   const lockPath = path.join(memoryDir, '.lock');
-  const deadline = sharedDir ? Date.now() + LOCK_SHARED_TIMEOUT_MS : Infinity;
+  const deadline = Date.now() + (sharedDir ? LOCK_SHARED_TIMEOUT_MS : 500);
   let token;
   do {
     token = tryAcquireLock(lockPath);
     if (token) {
-      try { return await fn(); }
+      try { return await fn(memoryDir); }
       finally { releaseLock(lockPath, token); }
     }
     await new Promise(r => setTimeout(r, 20));
   } while (Date.now() < deadline);
 
+  if (!sharedDir) return null;
   await new Promise(r => setTimeout(r, LOCK_RETRY_DELAY_MS));
   const retryToken = tryAcquireLock(lockPath);
   if (!retryToken) return null;
-  try { return await fn(); }
+  try { return await fn(memoryDir); }
   finally { releaseLock(lockPath, retryToken); }
 }
 
@@ -904,8 +929,7 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
 
   // backwards compat: overwrite: true maps to mode: 'replace'
   const replace = mode === 'replace' || overwrite === true;
-  const result = await withLock(() => {
-    const memoryDir = getMemoryDir();
+  const result = await withLock(memoryDir => {
     const memoryIndex = path.join(memoryDir, 'MEMORY.md');
     fs.mkdirSync(memoryDir, { recursive: true });
 
@@ -926,13 +950,22 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
       if (parsed.name.toLowerCase() === topic.toLowerCase()) {
         filename = parsed.filename;
         matchedExisting = true;
-        break;
       }
     }
-    if (!matchedExisting && indexed.has(filename)) {
+    if (!matchedExisting) {
       const base = filename.slice(0, -3);
       let n = 2;
-      do { filename = `${base}-${n++}.md`; } while (indexed.has(filename));
+      while (indexed.has(filename) || fs.existsSync(path.join(memoryDir, filename))) {
+        const candidate = path.join(memoryDir, filename);
+        if (!indexed.has(filename) && isRegularFile(candidate)) {
+          const block = readTextPrefixSync(candidate, MAX_BYTES).text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+          let name = block?.[1].match(/^name:\s*(.+)$/m)?.[1].trim() || '';
+          if (name.startsWith('"')) { try { name = JSON.parse(name); } catch {} }
+          else name = name.replace(/^'|'$/g, '');
+          if (typeof name === 'string' && name.toLowerCase() === topic.toLowerCase()) break;
+        }
+        filename = `${base}-${n++}.md`;
+      }
     }
     const topicPath = path.join(memoryDir, filename);
     if (fs.existsSync(topicPath) && !isRegularFile(topicPath))
@@ -970,8 +1003,8 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
 }
 
 export async function executeRemoveMemory({ topic }) {
-  const result = await withLock(() => {
-    const memoryIndex = getMemoryIndex();
+  const result = await withLock(memoryDir => {
+    const memoryIndex = path.join(memoryDir, 'MEMORY.md');
     if (!fs.existsSync(memoryIndex)) return 'No memory index found.';
 
     let lines = fs.readFileSync(memoryIndex, 'utf8').split('\n');
@@ -985,17 +1018,17 @@ export async function executeRemoveMemory({ topic }) {
       return `Cannot remove "${found.parsed.name}" — it is pinned. Unpin it first with: /memory unpin ${topic}`;
 
     lines.splice(found.idx, 1);
-    lines = maintainIndex(lines, parseRules());
+    lines = maintainIndex(lines, parseRules(), memoryDir);
+    if (memoryDir === SHARED_MEMORY_DIR) addToRemovedList(memoryDir, found.parsed.filename);
     atomicWriteFileSync(memoryIndex, lines.join('\n'));
-    if (getMemoryDir() === SHARED_MEMORY_DIR) addToRemovedList(SHARED_MEMORY_DIR, found.parsed.filename);
     return `Removed "${found.parsed.name}" from the index. Topic file is preserved on disk.`;
   });
   return result ?? LOCK_BUSY_MESSAGE;
 }
 
 export async function executePinMemory({ topic, pin }) {
-  const result = await withLock(() => {
-    const memoryIndex = getMemoryIndex();
+  const result = await withLock(memoryDir => {
+    const memoryIndex = path.join(memoryDir, 'MEMORY.md');
     if (!fs.existsSync(memoryIndex)) return 'No memory index found.';
 
     let lines = fs.readFileSync(memoryIndex, 'utf8').split('\n');
@@ -1019,7 +1052,7 @@ export async function executePinMemory({ topic, pin }) {
       lines[idx] = lines[idx].replace(' [pin]', '');
     }
 
-    lines = maintainIndex(lines, parseRules());
+    lines = maintainIndex(lines, parseRules(), memoryDir);
     const afterLine = lines.find(l => parseIndexLine(l)?.filename === parsed.filename) ?? lines[idx];
     atomicWriteFileSync(memoryIndex, lines.join('\n'));
     return `${pin ? 'Pinned' : 'Unpinned'} "${parsed.name}".\nBefore: ${before}\n After: ${afterLine}`;

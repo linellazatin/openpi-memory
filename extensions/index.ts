@@ -81,10 +81,10 @@ export default function (pi: ExtensionAPI) {
   // the first user prompt (e.g. for editing memory.jsonc upfront).
   // Also resets injection state so each session begins with a clean slate.
 
-  pi.on('session_start', () => {
+  pi.on('session_start', async () => {
     parseRules();               // creates memory.jsonc with defaults if missing
-    readMemoryIndex(MAX_LINES); // creates MEMORY.md if missing
-    retireRecapEntries();       // strip the retired last-session-recap index entry (files kept)
+    readMemoryIndex(MAX_LINES); // read-only until the first locked mutation
+    await retireRecapEntries(); // locked cleanup of the retired recap entry (files kept)
     _injectedOnce = false;
     _turnCount = 0;
     _handoffConsumed = false;
