@@ -1580,5 +1580,26 @@ await test('bounded index reads refuse a symlink swapped after the candidate che
 // Results
 // ═══════════════════════════════════════════════════════════
 
+await test('store and config FIFO reads are refused without blocking', async () => {
+  if (process.platform === 'win32') return;
+  const { spawnSync } = await import('node:child_process');
+  const dir = fs.mkdtempSync(path.join(TMP, 'fifo-read-'));
+  const script = `import assert from 'node:assert/strict'; import fs from 'node:fs'; import path from 'node:path'; import { execFileSync } from 'node:child_process'; const c = await import(${JSON.stringify(new URL('../extensions/memory-core.mjs', import.meta.url).href)}); const index = c.getMemoryIndex(); fs.mkdirSync(path.dirname(index), { recursive: true }); execFileSync('mkfifo', [index]); await assert.rejects(c.executeWriteMemory({ topic: 'FIFO Probe', content: 'body', summary: 'body' }), /regular/); fs.unlinkSync(c.MEMORY_RULES); execFileSync('mkfifo', [c.MEMORY_RULES]); assert.equal(c.parseRules().maxLines, 300);`;
+  try {
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, PI_CODING_AGENT_DIR: dir, PI_SHARED_MEMORY_HOME: dir }, timeout: 2000 });
+    assert.equal(child.status, 0, child.error?.message || child.stderr.toString());
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+await test('exclusive config publication preserves a racing creator', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const dir = fs.mkdtempSync(path.join(TMP, 'config-race-'));
+  const script = `import assert from 'node:assert/strict'; import fs from 'node:fs'; const c = await import(${JSON.stringify(new URL('../extensions/memory-core.mjs', import.meta.url).href)}); const write = fs.writeFileSync; const link = fs.linkSync; let raced = false; const create = () => { if (!raced) { raced = true; write(c.MEMORY_RULES, '{ "max_lines": 234 }'); } }; fs.writeFileSync = (file, ...args) => { if (file === c.MEMORY_RULES) create(); return write(file, ...args); }; fs.linkSync = (from, to) => { if (to === c.MEMORY_RULES) create(); return link(from, to); }; assert.equal(c.parseRules().maxLines, 234); assert.equal(JSON.parse(fs.readFileSync(c.MEMORY_RULES, 'utf8')).max_lines, 234);`;
+  try {
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, PI_CODING_AGENT_DIR: dir, PI_SHARED_MEMORY_HOME: dir }, timeout: 2000 });
+    assert.equal(child.status, 0, child.error?.message || child.stderr.toString());
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

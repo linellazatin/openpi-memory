@@ -305,26 +305,33 @@ export function getMemoryIndex() {
  * target. fs.renameSync is atomic on the same filesystem, so readers never observe a partial
  * write even if the process crashes or the write races with another writer.
  */
-function atomicWriteFileSync(filePath, content) {
-  try { if (!fs.lstatSync(filePath).isFile()) throw new Error(`Unsafe non-regular file: ${filePath}`); }
-  catch (err) { if (err.code !== 'ENOENT') throw err; }
+function atomicWriteFileSync(filePath, content, { exclusive = false } = {}) {
+  if (!exclusive) assertWritableFile(filePath);
   const tmpPath = `${filePath}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
   try {
     const fd = fs.openSync(tmpPath, 'wx', 0o600);
     try { fs.writeFileSync(fd, content, 'utf8'); fs.fsyncSync(fd); }
     finally { fs.closeSync(fd); }
-    fs.renameSync(tmpPath, filePath);
+    if (!exclusive) assertWritableFile(filePath);
+    if (exclusive) fs.linkSync(tmpPath, filePath);
+    else fs.renameSync(tmpPath, filePath);
   } finally {
     try { fs.unlinkSync(tmpPath); } catch (err) { if (err.code !== 'ENOENT') throw err; }
   }
+}
+
+function assertWritableFile(filePath) {
+  try { if (!fs.lstatSync(filePath).isFile()) throw new Error(`Unsafe non-regular file: ${filePath}`); }
+  catch (err) { if (err.code !== 'ENOENT') throw err; }
 }
 
 function removedListPath(memoryDir) {
   return path.join(memoryDir, '.ocl-removed');
 }
 
-function readStoreFileSync(filePath) {
-  const fd = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+function readStoreFileSync(filePath, { followSymlinks = false } = {}) {
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0) | (followSymlinks ? 0 : (fs.constants.O_NOFOLLOW || 0));
+  const fd = fs.openSync(filePath, flags);
   try {
     if (!fs.fstatSync(fd).isFile()) throw new Error(`Unsafe non-regular file: ${filePath}`);
     return fs.readFileSync(fd, 'utf8');
@@ -355,7 +362,7 @@ function removeFromRemovedList(memoryDir, filename) {
 // character may be incomplete when truncating; that harmless replacement character is preferable
 // to synchronously loading an unbounded shared-memory file into pi's process.
 function readTextPrefixSync(filePath, maxBytes) {
-  const fd = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+  const fd = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
   try {
     const stat = fs.fstatSync(fd);
     if (!stat.isFile()) throw new Error(`Unsafe non-regular file: ${filePath}`);
@@ -438,19 +445,21 @@ export function parseRules() {
   try {
     if (!fs.existsSync(MEMORY_RULES)) {
       fs.mkdirSync(AGENT_DIR, { recursive: true });
-      if (fs.existsSync(LEGACY_MEMORY_RULES)) {
+      const legacy = fs.existsSync(LEGACY_MEMORY_RULES);
+      const content = legacy ? readStoreFileSync(LEGACY_MEMORY_RULES, { followSymlinks: true }) : INITIAL_RULES_JSONC;
+      if (legacy) {
         // Same rationale as the shared_dir carry-over backup: this copy never touches
         // LEGACY_MEMORY_RULES, so the backup isn't strictly needed to prevent data loss here —
         // it's a deliberate safety net against a future code change, kept intentionally.
         if (!fs.existsSync(LEGACY_MEMORY_RULES_BACKUP)) {
-          fs.copyFileSync(LEGACY_MEMORY_RULES, LEGACY_MEMORY_RULES_BACKUP);
+          try { atomicWriteFileSync(LEGACY_MEMORY_RULES_BACKUP, content, { exclusive: true }); }
+          catch (err) { if (err.code !== 'EEXIST') throw err; }
         }
-        fs.copyFileSync(LEGACY_MEMORY_RULES, MEMORY_RULES);
-      } else {
-        fs.writeFileSync(MEMORY_RULES, INITIAL_RULES_JSONC, 'utf8');
       }
+      try { atomicWriteFileSync(MEMORY_RULES, content, { exclusive: true }); }
+      catch (err) { if (err.code !== 'EEXIST') throw err; }
     }
-    const raw = fs.readFileSync(MEMORY_RULES, 'utf8');
+    const raw = readStoreFileSync(MEMORY_RULES, { followSymlinks: true });
     const stripped = stripJsonc(raw);
     const obj = JSON.parse(stripped);
 
