@@ -19,9 +19,11 @@ Hooks used:
 | `session_before_compact` | Write compaction handoff to `HANDOFF.md`; reset injection state so next prompt re-injects  |
 | `session_compact`        | Auto-resume/consolidation after completed threshold compaction; handoff-aware fallback sends `"Continue."` only for explicit unfinished-work language |
 
+On pi >=1.2, `before_agent_start` also fires for extension-triggered custom-message runs. The extension skips those events before changing injection state or consuming a handoff; events without `messageType` on older supported pi versions retain the user-prompt behavior.
+
 `write_memory` also carries `promptSnippet` and `promptGuidelines` so the model always has a reminder to persist, even on turns where the full memory block is not injected.
 
-`before_agent_start` returns a full `systemPrompt` replacement rather than patching pi's diffed `systemPromptOptions.sections`. On pi `>=0.87` this is a whole-prompt cache miss whenever the memory block re-injects (every `injectEveryNTurns`); non-injected turns keep pi's normal cached prompt. Pi still recommends the sections route (unchanged through `1.0.0`), but memory is free-form text that changes across sessions, so this cost is accepted for simplicity.
+`before_agent_start` returns a full `systemPrompt` replacement rather than patching pi's diffed `systemPromptOptions.sections`. On pi `>=0.87` this is a whole-prompt cache miss whenever the memory block re-injects (every `injectEveryNTurns`); non-injected turns keep pi's normal cached prompt. Pi still recommends the sections route (unchanged through `1.2.0`), but memory is free-form text that changes across sessions, so this cost is accepted for simplicity.
 
 Mutations capture the directory acquired by `withLock` and retain it across config changes. Local contention refuses after about 500 ms; shared mode waits about 2 s and retries once after a 1 s delay. Startup recap retirement is async and locked; missing-index reads never create an index. Migration acquires local then shared, respects both removal lists, and marks success only after completion. Lock liveness treats `EPERM` as alive and stale reclaim rechecks inode/mtime.
 
@@ -460,4 +462,4 @@ npm run typecheck
 pi -e ./extensions/index.ts
 ```
 
-Current verification: 134 core checks, 12 real pi-loader checks, and typecheck on pi 0.99.1 and pi 1.0.0 (the lockfile/CI dev baseline is 1.0.0). From an OpenCode sibling checkout, `node tests/shared-store-test.mjs /absolute/path/to/openpi-memory/extensions/memory-core.mjs` also checks parallel real-process writes, pins, removals, foreign entries, and cleanup in temporary storage. Interactive rendering and model decisions are separate from these loader/storage checks.
+Current verification: 134 core checks and typecheck pass on pi 0.87.0, 0.99.1, 1.1.0, and 1.2.0; extension checks pass 15 on the floor and 17 on newer hosts (two built-in collision checks require pi >=0.99). The lockfile dev baseline is 1.2.0; CI tests all four targets and aligns 1.1.0 host-package versions because its caret ranges admit incompatible 1.2 transitive dependencies. From an OpenCode sibling checkout, `node tests/shared-store-test.mjs /absolute/path/to/openpi-memory/extensions/memory-core.mjs` also checks parallel real-process writes, pins, removals, foreign entries, and cleanup in temporary storage. Interactive rendering and model decisions are separate from these loader/storage checks.

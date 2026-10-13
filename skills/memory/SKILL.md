@@ -28,7 +28,7 @@ The extension registers three native tools. Use these instead of raw Write/Edit 
 
 ## Reading memory
 
-`MEMORY.md` is injected into your system prompt on the first user prompt of each session, and every `inject_every_n_turns` user prompts thereafter (default: 5; set to 1 in `memory.jsonc` for every-prompt injection).
+`MEMORY.md` is injected into your system prompt on the first user prompt of each session, and every `inject_every_n_turns` user prompts thereafter (default: 5; set to 1 in `memory.jsonc` for every-prompt injection). Custom-message runs triggered by extensions do not advance this interval or consume compaction handoffs.
 
 If `## Global Memory` is not in your current context, read it directly (path depends on `shared_dir` — see "## Memory Rules" injected context or `memory.jsonc` for the active location):
 

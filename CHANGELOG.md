@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.10] - 2026-10-13
+
+### Fixed
+
+- Skip pi 1.2 custom-message `before_agent_start` events without advancing the user-prompt injection interval or consuming a handoff. Older events without `messageType` retain their existing behavior.
+
+### Tests
+
+- Added user/custom/legacy injection scheduling and startup/post-compaction handoff regression checks.
+- Typecheck and 134 core checks pass on pi 0.87.0, 0.99.1, 1.1.0, and 1.2.0; extension checks pass 15 on the floor and 17 on newer hosts (the two collision checks require pi >=0.99).
+- Updated the lockfile dev baseline to pi 1.2.0 and added a CI matrix for pi 0.87.0, 0.99.1, 1.1.0, and 1.2.0. The 1.1.0 target aligns host-package versions to avoid incompatible 1.2 transitive dependencies.
+
 ## [0.3.9] - 2026-10-03
 
 ### Fixed
