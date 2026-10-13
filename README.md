@@ -22,7 +22,12 @@ A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory)
 > Considering that vast majority of people who use **pi** literally creates their own extensions, I'm shooting my shot on this memory extension that I believe is good enough to be your *ultra-simplest* memory handler.
 
 >
-> `Current project state also marked 'SAFE' for pi v1.0.0 release`
+> `Compatibility verified on pi 0.87.0, 0.99.1, 1.1.0, and 1.2.0`
+>
+> ## v0.3.10 - pi 1.2 compatibility
+> - custom-message runs do not advance the user-prompt injection interval or consume compaction handoffs
+> - legacy events remain supported; typecheck and 134 core checks pass on pi 0.87.0, 0.99.1, 1.1.0, and 1.2.0
+> - 17 extension checks pass on pi 0.99.1/1.1.0/1.2.0; 15 pass on 0.87.0, where built-in collision checks are skipped
 >
 > ## v0.3.9 - shared-store coordination (feat. openclaude-memory)
 > - missing-index reads stay in memory; startup recap retirement runs under the directory lock
@@ -108,7 +113,7 @@ All files are plain text. You can read, edit, and delete them at any time. The d
 
 `MEMORY.md` is the index that gets injected into the system prompt. Each entry points to a topic file. Topic files hold the full content — they are read on-demand, not injected wholesale; extension previews and body search inspect only their first 50 KiB. `memory.jsonc` holds your persist rules and config scalars. `HANDOFF.md` is managed automatically by the compaction handoff feature.
 
-On the first user prompt of each session, `MEMORY.md` and the rendered rules from `memory.jsonc` are injected into the system prompt. They are re-injected every `inject_every_n_turns` prompts thereafter (default: 5). After context compaction, injection state resets so the very next prompt always re-injects.
+On the first user prompt of each session, `MEMORY.md` and the rendered rules from `memory.jsonc` are injected into the system prompt. They are re-injected every `inject_every_n_turns` user prompts thereafter (default: 5). Custom-message runs triggered by other extensions do not advance this interval or consume handoffs. After context compaction, injection state resets so the very next user prompt always re-injects.
 
 See [Shared Storage Across Tools (shared_dir)](docs/shared-directory.md) for the opt-in cross-tool shared directory, and fresh-install / upgrade walkthroughs. See [How pi Handles Memory Injection](docs/memory-injection.md) for why injection is scheduled rather than persistent.
 
@@ -177,7 +182,7 @@ pi install git:github.com/linellazatin/openpi-memory
 
 The extension and skill load automatically after install. No further setup.
 
-**Requires pi coding agent `>=0.87.0`** (extension hooks verified against pi `0.87.0` through `1.0.0`). This is declared as an advisory `peerDependency` — pi provides its own copy of the API at runtime, so npm won't hard-block an older install; if you're on an older pi and auto-resume/consolidation stop working, upgrade pi.
+**Requires pi coding agent `>=0.87.0`** (current tests and typecheck pass on pi `0.87.0`, `0.99.1`, `1.1.0`, and `1.2.0`). This is declared as an advisory `peerDependency` — pi provides its own copy of the API at runtime, so npm won't hard-block an older install; if you're on an older pi and auto-resume/consolidation stop working, upgrade pi.
 
 ## Update
 
@@ -192,7 +197,7 @@ pi update --extensions
 ```
 or just always do ` --all` for convenience
 
-Versioned installs (e.g. `npm:@openlines/openpi-memory@0.3.9`) are pinned and skipped by `--extensions`. Use `pi install npm:@openlines/openpi-memory@new-version` to move to a specific version.
+Versioned installs (e.g. `npm:@openlines/openpi-memory@0.3.10`) are pinned and skipped by `--extensions`. Use `pi install npm:@openlines/openpi-memory@new-version` to move to a specific version.
 
 ## Uninstall
 

@@ -8,7 +8,7 @@
  *      tools, and command.
  *   3. The session_start handler bootstraps the memory files on disk.
  *   4. The before_agent_start handler injects the memory index into the system prompt.
- *      Section 6 below additionally checks, on pi >=0.99, that none of our tool/command names
+ *      Section 7 below additionally checks, on pi >=0.99, that none of our tool/command names
  *      shadow one of pi's built-in extensions (replacement-warning path in DefaultResourceLoader),
  *      with a positive control proving the check itself fires.
  *
@@ -60,7 +60,7 @@ async function ok(name, fn) {
 
 assert.deepEqual(result.errors, [], `extension failed to load: ${JSON.stringify(result.errors)}`);
 // Pin the pi >=0.99 load-warning shape. The standalone loader leaves `warnings` empty (only the
-// resource loader fills it), so the real collision guard is section 6 below.
+// resource loader fills it), so the real collision guard is section 7 below.
 assert.deepEqual(result.warnings ?? [], [], `extension emitted load warnings: ${JSON.stringify(result.warnings)}`);
 assert.equal(result.extensions.length, 1, 'expected exactly one loaded extension');
 
@@ -96,14 +96,91 @@ await ok('session_start creates config without an unlocked index write', async (
 await ok('before_agent_start injects memory into the system prompt', async () => {
   const outputs = [];
   for (const h of ext.handlers.get('before_agent_start') ?? []) {
-    outputs.push(await h({ systemPrompt: 'BASE_PROMPT' }));
+    outputs.push(await h({ type: 'before_agent_start', messageType: 'user', prompt: 'Hello', systemPrompt: 'BASE_PROMPT' }));
   }
   const injected = outputs.map((o) => o?.systemPrompt ?? '').join('\n');
   assert.ok(injected.startsWith('BASE_PROMPT'), 'base system prompt was not preserved');
   assert.ok(injected.includes('## Global Memory'), 'memory index section not injected');
 });
 
-// 6. Built-in name-collision sentinel (pi >=0.99)
+// 6. Injection stays scheduled by user prompts on both old and new event shapes.
+// Invoke the real loaded handlers with controlled events: older pi lacks messageType;
+// pi >=1.2 also emits custom events for extension-triggered runs.
+async function resetInjection() {
+  for (const h of ext.handlers.get('session_start') ?? []) await h();
+}
+
+async function runBeforeAgentStart(messageType = 'user') {
+  const event = {
+    type: 'before_agent_start',
+    systemPrompt: 'BASE_PROMPT',
+    ...(messageType === 'custom'
+      ? { messageType, message: { role: 'custom', customType: 'test', content: 'Continue', display: false } }
+      : { prompt: 'Hello', ...(messageType === null ? {} : { messageType }) }),
+  };
+  const outputs = [];
+  for (const h of ext.handlers.get('before_agent_start') ?? []) outputs.push(await h(event));
+  return outputs.find((o) => o?.systemPrompt !== undefined);
+}
+
+await ok('injects on the first and every fifth user prompt', async () => {
+  await resetInjection();
+  const injected = [];
+  for (let i = 0; i < 6; i++) injected.push(!!(await runBeforeAgentStart()));
+  assert.deepEqual(injected, [true, false, false, false, true, false]);
+});
+
+await ok('preserves injection for legacy events without messageType', async () => {
+  await resetInjection();
+  const injected = [];
+  // null selects the legacy shape without being replaced by the helper's default.
+  for (let i = 0; i < 6; i++) injected.push(!!(await runBeforeAgentStart(null)));
+  assert.deepEqual(injected, [true, false, false, false, true, false]);
+});
+
+await ok('custom runs neither inject nor advance the user-prompt interval', async () => {
+  await resetInjection();
+  const injected = [];
+  for (const type of ['custom', 'user', 'custom', 'user', 'user', 'custom', 'user', 'user']) {
+    injected.push(!!(await runBeforeAgentStart(type)));
+  }
+  assert.deepEqual(injected, [false, true, false, false, false, false, false, true]);
+});
+
+await ok('custom runs leave the startup handoff for the first user prompt', async () => {
+  const handoffPath = path.join(AGENT_DIR, 'HANDOFF.md');
+  fs.writeFileSync(handoffPath, '## Test handoff\n\nStartup orientation.\n');
+  try {
+    await resetInjection();
+    assert.equal(await runBeforeAgentStart('custom'), undefined);
+    const first = await runBeforeAgentStart();
+    assert.ok(first?.systemPrompt.includes('Startup orientation.'), 'first user prompt must receive the handoff');
+    for (let i = 0; i < 3; i++) await runBeforeAgentStart();
+    const next = await runBeforeAgentStart();
+    assert.ok(next?.systemPrompt.includes('## Global Memory'));
+    assert.ok(!next.systemPrompt.includes('## Compaction Handoff'), 'handoff must be consumed only once');
+  } finally { fs.rmSync(handoffPath, { force: true }); }
+});
+
+await ok('custom runs preserve post-compaction reinjection and handoff', async () => {
+  const handoffPath = path.join(AGENT_DIR, 'HANDOFF.md');
+  try {
+    await resetInjection();
+    await runBeforeAgentStart();
+    for (const h of ext.handlers.get('session_before_compact') ?? []) {
+      await h({
+        reason: 'manual',
+        preparation: { messagesToSummarize: [{ role: 'assistant', content: [{ type: 'text', text: 'Post-compaction orientation.' }] }] },
+      });
+    }
+    assert.equal(await runBeforeAgentStart('custom'), undefined);
+    const next = await runBeforeAgentStart();
+    assert.ok(next?.systemPrompt.includes('## Global Memory'), 'first user prompt after compaction must reinject');
+    assert.ok(next.systemPrompt.includes('Post-compaction orientation.'), 'custom run must not consume the handoff');
+  } finally { fs.rmSync(handoffPath, { force: true }); }
+});
+
+// 7. Built-in name-collision sentinel (pi >=0.99)
 // pi >=0.99 drops a replaceable built-in extension and pushes a load warning when another
 // extension registers the same tool/command/flag name. Only DefaultResourceLoader produces those
 // warnings, so drive it with stand-ins claiming the resource names pi's own built-ins use today

@@ -9,11 +9,24 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        pi-version: ['0.87.0', '0.99.1', '1.1.0', '1.2.0']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm install
+      - run: npm ci
+      - name: Select pi compatibility target
+        run: |
+          packages=("@earendil-works/pi-coding-agent@${{ matrix.pi-version }}" "@earendil-works/pi-tui@${{ matrix.pi-version }}")
+          # pi 1.1's ^1.1 ranges admit incompatible 1.2 host packages.
+          if [[ '${{ matrix.pi-version }}' == '1.1.0' ]]; then
+            for name in chord pi-agent-core pi-ai pi-codemode pi-mcp pi-telemetry; do
+              packages+=("@earendil-works/$name@1.1.0")
+            done
+          fi
+          npm install --no-save --package-lock=false "${packages[@]}"
       - run: npm run typecheck
       - run: npm test

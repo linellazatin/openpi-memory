@@ -5,7 +5,7 @@
 ## Known limitations (for now)
 
 - Module-level injection state (`_injectedOnce`, `_turnCount`) is process-global. Safe for the standard single-user pi session; upgrade to a per-session Map if multi-session support is needed in future.
-- Manual edits to `MEMORY.md` or `memory.jsonc` made between user prompts are picked up on the next `before_agent_start` call (no cache to invalidate). This is by design.
+- Manual edits to `MEMORY.md` or `memory.jsonc` made between user prompts are picked up on the next user-prompt `before_agent_start` call (no cache to invalidate). This is by design.
 - Atomicity is per file, not a multi-file transaction. Normal failed writes attempt rollback; abrupt termination can leave an unindexed topic or stale index metadata, and directory entries are not fsynced. OpenCode's explicit repair can recover shared unindexed topics, excluding tombstones; pin flags that lived only in a missing index cannot be recovered.
 - The shared advisory protocol lacks atomic compare-and-unlink and does not protect against writers ignoring the lock. Use updated cooperating implementations on local filesystems.
 
@@ -66,4 +66,4 @@ OpenPI preserves topic files when removing an index entry. In the shared store i
 
 **Q: Does replace keep an outdated description?** No. Both modes refresh name, description, and last-updated metadata, preserving creation and unrelated fields. Failed index publication attempts to restore the previous topic/index rather than silently leaving changed content after a reported failure.
 
-**Q: Which co-tenant checks were run?** pi 0.99.1 and pi 1.0.0 pass 134 core tests, 12 real-loader checks, and typecheck (the lockfile/CI dev baseline is 1.0.0). The OpenCode sibling's real-process OpenCode/pi writer check also passes, preserving bodies, pins, removals, foreign entries, and cleanup. Both implementations must be updated; older published versions may retain the audited unlocked startup paths.
+**Q: Which co-tenant checks were run?** Current verification passes 134 core tests and typecheck on pi 0.87.0, 0.99.1, 1.1.0, and 1.2.0, plus 15 extension checks on the floor and 17 on newer hosts. The lockfile dev baseline is 1.2.0; CI covers all four versions. During v0.3.9 verification, the OpenCode sibling's real-process OpenCode/pi writer check also passed, preserving bodies, pins, removals, foreign entries, and cleanup; it was not rerun for this injection-only fix. Both implementations must be updated; older published versions may retain the audited unlocked startup paths.
