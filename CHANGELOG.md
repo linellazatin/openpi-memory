@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.11] - 2026-11-04
+
+### Fixed
+
+- Capped raw and summary handoff entries at 12 KiB including metadata and truncation markers, without splitting UTF-8 characters.
+- Bounded handoff history reads to the final 50 KiB for injection and mutations. Oversized legacy entries are marked and capped; complete newer entries take precedence over partial older entries. Retention may keep fewer than `handoff_keep` entries when older history exceeds the read window.
+- Preserved entry separation when a legacy handoff lacks a final newline.
+
+### Changed
+
+- Added pi 1.5.0 to the CI compatibility matrix, retaining the pi 0.87.0 floor and pi 1.2.0 lockfile dev baseline.
+- Included `CHANGELOG.md` in the npm package for pi 1.5 extension-update notices.
+- Refreshed compatibility documentation after reassessing pi 1.3–1.5 release changes; no pi API migration was required.
+
+### Tests
+
+- Added seven handoff regressions covering byte limits, UTF-8, bounded reads and mutations, latest-entry selection, exact-boundary preservation, and legacy newline separation. Typecheck and all 141 core checks pass on pi 1.5.0 and 0.87.0; extension checks pass 17 on 1.5.0 and 15 on the floor.
+- Verified pi 1.5.0 schema validation and execution for all three memory tools, including rejection of missing required fields and an invalid write mode. Live-provider compaction and interactive terminal rendering were not tested.
+
 ## [0.3.10] - 2026-10-13
 
 ### Fixed

@@ -22,7 +22,12 @@ A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory)
 > Considering that vast majority of people who use **pi** literally creates their own extensions, I'm shooting my shot on this memory extension that I believe is good enough to be your *ultra-simplest* memory handler.
 
 >
-> `Compatibility verified on pi 0.87.0, 0.99.1, 1.1.0, and 1.2.0`
+> `Compatibility verified on pi 0.87.0, 0.99.1, 1.1.0, 1.2.0, and 1.5.0`
+>
+> ## v0.3.11 - bounded compaction handoffs and pi 1.5 compatibility
+> - handoff entries are capped at 12 KiB with truncation markers; history reads inspect only the final 50 KiB
+> - typecheck and 141 core checks pass on pi 1.5.0 and 0.87.0; extension checks pass 17 on 1.5.0 and 15 on the floor
+> - CI includes pi 1.5.0, the npm package includes the changelog for update notices, and the pi 0.87.0 floor is unchanged
 >
 > ## v0.3.10 - pi 1.2 compatibility
 > - custom-message runs do not advance the user-prompt injection interval or consume compaction handoffs
@@ -35,14 +40,6 @@ A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory)
 > - migration locks local then shared and respects removal lists; unrelated unindexed slug owners are preserved
 > - atomic writes flush and clean temporary files, no-follow reads verify descriptors, and failed writes attempt rollback
 > - append and replace refresh current frontmatter metadata; 134 core tests and 12 real-loader checks pass on pi 0.99.1 and pi 1.0.0
->
-> ## v0.3.8 - pi 0.99 compatibility
-> - re-assessed against pi 0.99.1 with no source changes; hooks, tools, overlay UI, and theme tokens are all unchanged
-> - supported floor is now pi 0.87.0 (`>=0.87.0`), `engines.node` `>=22.19.0`, and the host-load smoke test now guards against shadowing pi's built-in tool/command names
->
-> ## v0.3.7 - pi 0.87 compatibility
-> - dev/typecheck baseline bumped to pi 0.87.0; hooks verified against 0.84.2 – 0.87.0 with no source changes
-> - added a host-load smoke test that loads the extension through pi's real loader
 >
 > see [CHANGELOG](CHANGELOG.md) for more details
 
@@ -111,7 +108,7 @@ Just files, structure, and an agent that knows where to look.
 
 All files are plain text. You can read, edit, and delete them at any time. The default location respects `PI_CODING_AGENT_DIR` if set (pi's config-dir override).
 
-`MEMORY.md` is the index that gets injected into the system prompt. Each entry points to a topic file. Topic files hold the full content — they are read on-demand, not injected wholesale; extension previews and body search inspect only their first 50 KiB. `memory.jsonc` holds your persist rules and config scalars. `HANDOFF.md` is managed automatically by the compaction handoff feature.
+`MEMORY.md` is the index that gets injected into the system prompt. Each entry points to a topic file. Topic files hold the full content — they are read on-demand, not injected wholesale; extension previews and body search inspect only their first 50 KiB. `memory.jsonc` holds your persist rules and config scalars. `HANDOFF.md` is managed automatically by the compaction handoff feature. Raw and summary entries are capped at 12 KiB, including metadata and truncation markers; reads inspect only the final 50 KiB of history.
 
 On the first user prompt of each session, `MEMORY.md` and the rendered rules from `memory.jsonc` are injected into the system prompt. They are re-injected every `inject_every_n_turns` user prompts thereafter (default: 5). Custom-message runs triggered by other extensions do not advance this interval or consume handoffs. After context compaction, injection state resets so the very next user prompt always re-injects.
 
@@ -182,7 +179,7 @@ pi install git:github.com/linellazatin/openpi-memory
 
 The extension and skill load automatically after install. No further setup.
 
-**Requires pi coding agent `>=0.87.0`** (current tests and typecheck pass on pi `0.87.0`, `0.99.1`, `1.1.0`, and `1.2.0`). This is declared as an advisory `peerDependency` — pi provides its own copy of the API at runtime, so npm won't hard-block an older install; if you're on an older pi and auto-resume/consolidation stop working, upgrade pi.
+**Requires pi coding agent `>=0.87.0`** (tests and typecheck verified on pi `0.87.0`, `0.99.1`, `1.1.0`, `1.2.0`, and `1.5.0`). This is declared as an advisory `peerDependency` — pi provides its own copy of the API at runtime, so npm won't hard-block an older install; if you're on an older pi and auto-resume/consolidation stop working, upgrade pi.
 
 ## Update
 
@@ -197,7 +194,7 @@ pi update --extensions
 ```
 or just always do ` --all` for convenience
 
-Versioned installs (e.g. `npm:@openlines/openpi-memory@0.3.10`) are pinned and skipped by `--extensions`. Use `pi install npm:@openlines/openpi-memory@new-version` to move to a specific version.
+Versioned installs (e.g. `npm:@openlines/openpi-memory@0.3.11`) are pinned and skipped by `--extensions`. Use `pi install npm:@openlines/openpi-memory@new-version` to move to a specific version.
 
 ## Uninstall
 

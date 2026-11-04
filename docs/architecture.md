@@ -23,7 +23,7 @@ On pi >=1.2, `before_agent_start` also fires for extension-triggered custom-mess
 
 `write_memory` also carries `promptSnippet` and `promptGuidelines` so the model always has a reminder to persist, even on turns where the full memory block is not injected.
 
-`before_agent_start` returns a full `systemPrompt` replacement rather than patching pi's diffed `systemPromptOptions.sections`. On pi `>=0.87` this is a whole-prompt cache miss whenever the memory block re-injects (every `injectEveryNTurns`); non-injected turns keep pi's normal cached prompt. Pi still recommends the sections route (unchanged through `1.2.0`), but memory is free-form text that changes across sessions, so this cost is accepted for simplicity.
+`before_agent_start` returns a full `systemPrompt` replacement rather than patching pi's diffed `systemPromptOptions.sections`. On pi `>=0.87` this is a whole-prompt cache miss whenever the memory block re-injects (every `injectEveryNTurns`); non-injected turns keep pi's normal cached prompt. Pi still recommends the sections route (unchanged through `1.5.0`), but memory is free-form text that changes across sessions, so this cost is accepted for simplicity.
 
 Mutations capture the directory acquired by `withLock` and retain it across config changes. Local contention refuses after about 500 ms; shared mode waits about 2 s and retries once after a 1 s delay. Startup recap retirement is async and locked; missing-index reads never create an index. Migration acquires local then shared, respects both removal lists, and marks success only after completion. Lock liveness treats `EPERM` as alive and stale reclaim rechecks inode/mtime.
 
@@ -385,11 +385,11 @@ The handoff entry is injected exactly once — on the first prompt after a compa
 | `## Compaction Handoff` heading + 2-line preamble              | ~30      |
 | Entry header (`## ISO datetime (reason)`)                      | ~15      |
 | Bullet content — typical (5–8 bullets)                         | ~70      |
-| Bullet content — maximum (15 bullets cap)                      | ~180     |
+| Bullet content (15 bullets, assuming short lines)              | ~180     |
 | **Typical handoff overhead**                                   | **~115** |
-| **Maximum handoff overhead**                                   | **~225** |
+| **Short-line handoff overhead**                                | **~225** |
 
-Set `"handoff_keep": 0` in `memory.jsonc` to disable entirely.
+These are short-line estimates, not a token ceiling. Raw and summary entries have a 12 KiB byte limit including metadata and truncation markers; actual token counts depend on content. Reads and mutations inspect only the final 50 KiB of history, which can reduce retained history below `handoff_keep`. Oversized entries are marked and truncated without splitting UTF-8 characters. Set `"handoff_keep": 0` in `memory.jsonc` to disable entirely.
 
 ### Auto-resume nudge cost
 
@@ -462,4 +462,4 @@ npm run typecheck
 pi -e ./extensions/index.ts
 ```
 
-Current verification: 134 core checks and typecheck pass on pi 0.87.0, 0.99.1, 1.1.0, and 1.2.0; extension checks pass 15 on the floor and 17 on newer hosts (two built-in collision checks require pi >=0.99). The lockfile dev baseline is 1.2.0; CI tests all four targets and aligns 1.1.0 host-package versions because its caret ranges admit incompatible 1.2 transitive dependencies. From an OpenCode sibling checkout, `node tests/shared-store-test.mjs /absolute/path/to/openpi-memory/extensions/memory-core.mjs` also checks parallel real-process writes, pins, removals, foreign entries, and cleanup in temporary storage. Interactive rendering and model decisions are separate from these loader/storage checks.
+Version 0.3.11 verification: 141 core checks and typecheck pass on pi 0.87.0 and 1.5.0; extension checks pass 15 on the floor and 17 on 1.5.0 (two built-in collision checks require pi >=0.99). Prior 134-check verification covered pi 0.99.1, 1.1.0, and 1.2.0. Pi 1.5.0 schema validation and execution were additionally checked for all three memory tools, including required-field and invalid-mode rejection. No pi API migration was required; 0.3.11 changes the pi-independent handoff core. The lockfile dev baseline remains 1.2.0; CI tests all five targets and aligns 1.1.0 host-package versions because its caret ranges admit incompatible 1.2 transitive dependencies. From an OpenCode sibling checkout, `node tests/shared-store-test.mjs /absolute/path/to/openpi-memory/extensions/memory-core.mjs` also checks parallel real-process writes, pins, removals, foreign entries, and cleanup in temporary storage. Interactive rendering and model decisions are separate from these loader/storage checks.

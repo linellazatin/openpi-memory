@@ -1,6 +1,6 @@
 {
   "name": "@openlines/openpi-memory",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "description": "Global persistent memory for pi coding agent sessions via MEMORY.md injection",
   "keywords": [
     "pi",
@@ -37,6 +37,7 @@
     "typecheck": "tsc --noEmit"
   },
   "files": [
+    "CHANGELOG.md",
     "extensions/",
     "skills/",
     "docs/",

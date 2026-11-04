@@ -361,14 +361,17 @@ function removeFromRemovedList(memoryDir, filename) {
 // Read no more than maxBytes, checking size before allocating file contents. The final UTF-8
 // character may be incomplete when truncating; that harmless replacement character is preferable
 // to synchronously loading an unbounded shared-memory file into pi's process.
-function readTextPrefixSync(filePath, maxBytes) {
+function readTextPrefixSync(filePath, maxBytes, fromEnd = false) {
   const fd = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
   try {
     const stat = fs.fstatSync(fd);
     if (!stat.isFile()) throw new Error(`Unsafe non-regular file: ${filePath}`);
     const buffer = Buffer.alloc(Math.min(stat.size, maxBytes));
-    const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
-    return { text: buffer.subarray(0, bytesRead).toString('utf8'), truncated: stat.size > maxBytes };
+    const position = fromEnd ? Math.max(0, stat.size - maxBytes) : 0;
+    const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, position);
+    let start = 0;
+    if (position > 0) while (start < bytesRead && (buffer[start] & 0xc0) === 0x80) start++;
+    return { text: buffer.subarray(start, bytesRead).toString('utf8'), truncated: stat.size > maxBytes };
   } finally {
     fs.closeSync(fd);
   }
@@ -1066,6 +1069,31 @@ export async function executePinMemory({ topic, pin }) {
 
 // --- Compaction handoff ---
 
+// Includes header, truncation marker, and final newline. History reads are limited to MAX_BYTES.
+export const MAX_HANDOFF_SUMMARY_BYTES = 12 * 1024;
+const HANDOFF_TRUNCATION = '<!-- handoff truncated: entry exceeds size limit -->';
+
+function capHandoffEntry(text, marker = HANDOFF_TRUNCATION) {
+  const buffer = Buffer.from(text, 'utf8');
+  if (buffer.length <= MAX_HANDOFF_SUMMARY_BYTES) return text;
+  const suffix = `\n\n${marker}\n`;
+  let end = MAX_HANDOFF_SUMMARY_BYTES - Buffer.byteLength(suffix);
+  while ((buffer[end] & 0xc0) === 0x80) end--;
+  return buffer.subarray(0, end).toString('utf8') + suffix;
+}
+
+function readHandoffSections() {
+  migrateLegacyHandoff();
+  if (!fs.existsSync(HANDOFF_FILE)) return [];
+  let { text, truncated } = readTextPrefixSync(HANDOFF_FILE, MAX_BYTES, true);
+  if (truncated) {
+    // The tail may start inside an older entry. Keep complete newer entries when available.
+    const header = /^## /m.exec(text);
+    text = header ? text.slice(header.index) : `${HANDOFF_TRUNCATION}\n\n${text}`;
+  }
+  return text.split(/(?=^## )/m).filter(s => s.trim()).map(s => capHandoffEntry(s));
+}
+
 /**
  * Extract the last N assistant text messages from a messagesToSummarize array,
  * format as terse bullet points, and append a dated entry to HANDOFF.md.
@@ -1112,22 +1140,13 @@ export function writeHandoff(messages, reason, handoffKeep = DEFAULT_HANDOFF_KEE
 
   if (bullets.length === 0) return 'empty';
 
-  const entry = `## ${nowIso()} (${reason})\n\n${bullets.join('\n')}\n`;
-
-  migrateLegacyHandoff();
-  const existing = fs.existsSync(HANDOFF_FILE) ? fs.readFileSync(HANDOFF_FILE, 'utf8') : '';
-  const updated = existing + (existing.endsWith('\n') || !existing ? '' : '\n') + '\n' + entry;
-
-  // Prune: keep only the last handoffKeep `##` sections
-  const sections = updated.split(/(?=^## )/m).filter(s => s.trim());
-  const pruned = sections.slice(-handoffKeep).join('\n');
-  fs.writeFileSync(HANDOFF_FILE, pruned.trimStart() + '\n', 'utf8');
+  const entry = capHandoffEntry(`## ${nowIso()} (${reason})\n\n${bullets.join('\n')}\n`);
+  const sections = readHandoffSections();
+  sections.push(entry);
+  const pruned = sections.slice(-handoffKeep).map(s => capHandoffEntry(s.trimEnd() + '\n')).join('');
+  fs.writeFileSync(HANDOFF_FILE, pruned.trimStart(), 'utf8');
   return 'written';
 }
-
-// Max bytes of pi compaction summary persisted into a single HANDOFF entry. Real observed
-// threshold summaries run ~1-7 KB; this ceiling keeps one injected handoff bounded.
-export const MAX_HANDOFF_SUMMARY_BYTES = 12 * 1024;
 
 /**
  * Automatic threshold-consolidation handoff: replace the latest HANDOFF entry (the raw
@@ -1141,22 +1160,17 @@ export const MAX_HANDOFF_SUMMARY_BYTES = 12 * 1024;
 export function replaceLatestHandoffWithCompactionSummary(summary, reason, handoffKeep = DEFAULT_HANDOFF_KEEP) {
   if (handoffKeep === 0) return 'disabled';
 
-  let body = String(summary).replace(/^## /gm, '### ').trim();
-  if (Buffer.byteLength(body) > MAX_HANDOFF_SUMMARY_BYTES) {
-    body = Buffer.from(body, 'utf8').subarray(0, MAX_HANDOFF_SUMMARY_BYTES).toString('utf8')
-      + '\n\n<!-- summary truncated: compaction summary exceeds size limit -->';
-  }
-
-  const entry = `## ${nowIso()} Consolidation (${reason})\n\n${body}\n`;
-
-  migrateLegacyHandoff();
-  const existing = fs.existsSync(HANDOFF_FILE) ? fs.readFileSync(HANDOFF_FILE, 'utf8') : '';
-  const sections = existing.split(/(?=^## )/m).filter(s => s.trim());
+  const body = String(summary).replace(/^## /gm, '### ').trim();
+  const entry = capHandoffEntry(
+    `## ${nowIso()} Consolidation (${reason})\n\n${body}\n`,
+    '<!-- summary truncated: compaction summary exceeds size limit -->',
+  );
+  const sections = readHandoffSections();
   // Replace the latest section (the raw pre-compaction handoff) rather than append a second one.
   if (sections.length > 0) sections[sections.length - 1] = entry;
   else sections.push(entry);
-  const pruned = sections.slice(-handoffKeep).join('\n');
-  fs.writeFileSync(HANDOFF_FILE, pruned.trimStart() + '\n', 'utf8');
+  const pruned = sections.slice(-handoffKeep).map(s => capHandoffEntry(s.trimEnd() + '\n')).join('');
+  fs.writeFileSync(HANDOFF_FILE, pruned.trimStart(), 'utf8');
   return 'written';
 }
 
@@ -1176,10 +1190,7 @@ function migrateLegacyHandoff() {
  * Returns empty string if the file doesn't exist or is empty.
  */
 export function readHandoff() {
-  migrateLegacyHandoff();
-  if (!fs.existsSync(HANDOFF_FILE)) return '';
-  const raw = fs.readFileSync(HANDOFF_FILE, 'utf8');
-  const sections = raw.split(/(?=^## )/m).filter(s => s.trim());
+  const sections = readHandoffSections();
   return sections.length > 0 ? sections[sections.length - 1].trim() : '';
 }
 

@@ -734,6 +734,71 @@ await test('writeHandoff: skips non-assistant messages and empty blocks', async 
   assert.ok(content.includes('actual work done'), 'assistant text included');
 });
 
+await test('writeHandoff: caps a single huge UTF-8 line including marker and header', async () => {
+  fs.writeFileSync(HANDOFF_FILE, '');
+  writeHandoff(fakeMessages(['😀'.repeat(300000)]), 'manual', 3);
+  const stored = fs.readFileSync(HANDOFF_FILE, 'utf8');
+  assert.ok(Buffer.byteLength(stored) <= 12 * 1024, 'entire raw entry is bounded');
+  assert.ok(stored.includes('handoff truncated'), 'explicit truncation marker');
+  assert.ok(!stored.includes('\uFFFD'), 'UTF-8 is not split');
+});
+
+await test('readHandoff: bounds legacy oversized entries and marks truncation', async () => {
+  fs.writeFileSync(HANDOFF_FILE, '## old\n\n' + 'x'.repeat(1024 * 1024));
+  const originalRead = fs.readSync;
+  let bytes = 0;
+  fs.readSync = (...args) => { const n = originalRead(...args); bytes += n; return n; };
+  let entry;
+  try { entry = readHandoff(); } finally { fs.readSync = originalRead; }
+  assert.ok(bytes > 0 && bytes <= 50 * 1024, 'descriptor read is bounded');
+  assert.ok(Buffer.byteLength(entry) <= 12 * 1024, 'injected entry is bounded');
+  assert.ok(entry.includes('handoff truncated'), 'oversized legacy entry marked');
+});
+
+await test('readHandoff: selects the latest entry after oversized history', async () => {
+  fs.writeFileSync(HANDOFF_FILE, '## old\n\n' + 'x'.repeat(1024 * 1024) + '\n## latest\n\nKeep this orientation.\n');
+  assert.equal(readHandoff(), '## latest\n\nKeep this orientation.');
+});
+
+await test('handoff mutations: read bounded history and normalize retained entries', async () => {
+  for (const mutate of [
+    () => writeHandoff(fakeMessages(['new raw entry']), 'manual', 3),
+    () => replaceLatestHandoffWithCompactionSummary('new summary', 'threshold', 3),
+  ]) {
+    fs.writeFileSync(HANDOFF_FILE, '## old\n\n' + 'x'.repeat(1024 * 1024) + '\n## recent\n\nRecent entry.\n');
+    const originalReadFile = fs.readFileSync;
+    fs.readFileSync = (file, ...args) => {
+      assert.notEqual(file, HANDOFF_FILE, 'mutation must not load whole handoff');
+      return originalReadFile(file, ...args);
+    };
+    try { mutate(); } finally { fs.readFileSync = originalReadFile; }
+    const stored = fs.readFileSync(HANDOFF_FILE, 'utf8');
+    assert.ok(Buffer.byteLength(stored) <= 3 * 12 * 1024, 'retained entries bounded');
+  }
+});
+
+await test('writeHandoff: separates a legacy entry without a final newline', async () => {
+  fs.writeFileSync(HANDOFF_FILE, '## previous\n\nPrevious entry.');
+  writeHandoff(fakeMessages(['Latest work.']), 'manual', 3);
+  assert.ok(readHandoff().includes('Latest work.'));
+  assert.ok(!readHandoff().includes('Previous entry.'), 'latest entry stays separate');
+});
+
+await test('replaceLatestHandoff: bounds multibyte summary including metadata', async () => {
+  fs.writeFileSync(HANDOFF_FILE, '');
+  replaceLatestHandoffWithCompactionSummary('😀'.repeat(20000), 'threshold', 3);
+  const stored = fs.readFileSync(HANDOFF_FILE, 'utf8');
+  assert.ok(Buffer.byteLength(stored) <= 12 * 1024, 'summary entry is bounded');
+  assert.ok(stored.includes('summary truncated'));
+  assert.ok(!stored.includes('\uFFFD'), 'UTF-8 is not split');
+});
+
+await test('readHandoff: preserves an entry exactly at the byte limit', async () => {
+  const entry = '## boundary\n\n' + 'a'.repeat(12 * 1024 - Buffer.byteLength('## boundary\n\n'));
+  fs.writeFileSync(HANDOFF_FILE, entry);
+  assert.equal(readHandoff(), entry);
+});
+
 // ═══════════════════════════════════════════════════════════
 // 10. searchMemory
 // ═══════════════════════════════════════════════════════════
