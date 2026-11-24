@@ -827,9 +827,8 @@ await test('searchMemory: matches by summary', async () => {
 });
 
 await test('searchMemory: matches in topic body', async () => {
-  // Manually create a file not tracked in index to test body-only path
+  await executeWriteMemory({ topic: 'Orphan Body', content: 'This file has a unique_body_token inside.', summary: 'body search' });
   const orphan = path.join(getMemoryDir(), 'orphan-body.md');
-  fs.writeFileSync(orphan, 'This file has a unique_body_token inside.', 'utf8');
   const results = searchMemory('unique_body_token');
   assert.ok(results.some(r => r.filename === 'orphan-body.md'), 'found in body');
   assert.equal(results.find(r => r.filename === 'orphan-body.md')?.matchType, 'body', 'matchType=body');
@@ -1673,6 +1672,53 @@ await test('exclusive config publication preserves a racing creator', async () =
     const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, PI_CODING_AGENT_DIR: dir, PI_SHARED_MEMORY_HOME: dir }, timeout: 2000 });
     assert.equal(child.status, 0, child.error?.message || child.stderr.toString());
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+
+await test('blank mutation queries cannot target a sole topic', async () => {
+  writeRules('{}');
+  const index = getMemoryIndex();
+  fs.mkdirSync(path.dirname(index), { recursive: true });
+  fs.writeFileSync(index, '');
+  await executeWriteMemory({topic:'Audit Sole', content:'body', summary:'summary'});
+  const before = readIndex();
+  for (const topic of ['', '   ']) {
+    assert.match(await executeRemoveMemory({topic}), /invalid topic/i);
+    assert.match(await executePinMemory({topic, pin:true}), /invalid topic/i);
+  }
+  assert.equal(readIndex(), before);
+});
+await test('summary pin markers are data and stale pins heal', async () => {
+  await executeWriteMemory({topic:'Audit Flags', content:'body', summary:'literal [pin] marker'});
+  assert.equal(readIndexEntries().find(e => e.name === 'Audit Flags').pinned, false);
+  await executePinMemory({topic:'Audit Flags', pin:true});
+  await executePinMemory({topic:'Audit Flags', pin:false});
+  assert.equal(readIndexEntries().find(e => e.name === 'Audit Flags').summary, 'literal [pin] marker');
+  const stale = maintainIndex(['- [Audit Flags](audit-flags.md) [pin] 2000-01-01 [stale?] -- literal [pin] marker'], parseRules());
+  assert.ok(!stale[0].includes('[stale?]'));
+  assert.match(await executeRemoveMemory({topic:'Audit Flags'}), /^Removed/);
+});
+await test('search excludes removed and unindexed topics', async () => {
+  await executeWriteMemory({topic:'Audit Search', content:'AUDIT_SEARCH_MARKER', summary:'ordinary'});
+  assert.equal(searchMemory('AUDIT_SEARCH_MARKER').length, 1);
+  await executeRemoveMemory({topic:'Audit Search'});
+  assert.equal(searchMemory('AUDIT_SEARCH_MARKER').length, 0);
+});
+await test('numbered carry-over collisions reuse identical destinations', async () => {
+  writeRules('{}');
+  const local = getMemoryDir();
+  const shared = path.join(SHARED_HOME, '.agents', 'memory');
+  fs.mkdirSync(shared, {recursive:true});
+  fs.writeFileSync(path.join(local, 'MEMORY.md'), '- [Audit Retry](audit-retry.md) 2026-01-01 -- retry\n');
+  fs.writeFileSync(path.join(local, 'audit-retry.md'), 'local retry');
+  fs.writeFileSync(path.join(shared, 'audit-retry.md'), 'foreign');
+  fs.writeFileSync(path.join(shared, 'audit-retry-opim.md'), 'foreign suffix');
+  writeRules('{"shared_dir":true}');
+  _resetCarryOver(); getMemoryDir();
+  _resetCarryOver(); getMemoryDir();
+  assert.ok(!fs.existsSync(path.join(shared, 'audit-retry-opim-3.md')));
+  writeRules('{}');
 });
 
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed\n`);

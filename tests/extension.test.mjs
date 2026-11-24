@@ -186,6 +186,22 @@ await ok('custom runs preserve post-compaction reinjection and handoff', async (
 // warnings, so drive it with stand-ins claiming the resource names pi's own built-ins use today
 // (`/mcp`, `/llama`, `codemode`, `tool_search`), plus a positive control proving the sentinel fires.
 
+await ok('disabled handoff leaves existing history out of prompts', async () => {
+  const config = path.join(AGENT_DIR, 'memory.jsonc');
+  const before = fs.readFileSync(config, 'utf8');
+  const handoff = path.join(AGENT_DIR, 'HANDOFF.md');
+  fs.writeFileSync(handoff, '## Audit\n\nNeed to finish AUDIT_DISABLED_HANDOFF.\n');
+  fs.writeFileSync(config, '{"handoff_keep":0}');
+  try {
+    await resetInjection();
+    const output = await runBeforeAgentStart();
+    assert.ok(!output.systemPrompt.includes('AUDIT_DISABLED_HANDOFF'));
+  } finally {
+    fs.writeFileSync(config, before);
+    fs.rmSync(handoff, {force:true});
+  }
+});
+
 const [piMajor, piMinor] = PI_VERSION.split('.').map(Number);
 const piReportsBuiltinReplacement = piMajor > 0 || (piMajor === 0 && piMinor >= 99);
 
