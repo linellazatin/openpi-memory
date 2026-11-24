@@ -12,7 +12,7 @@ Each line in `MEMORY.md` follows this format:
 
 The date stamp is a full ISO 8601 datetime with the host timezone offset (e.g. `2026-08-07T01:15:30+08:00`). Legacy entries with date-only stamps (`YYYY-MM-DD`) remain readable — the extension handles both formats.
 
-- `[pin]` — pinned entries are never cleanup candidates and never flagged stale
+- `[pin]` — pinned entries are never cleanup candidates and never flagged stale. Only the metadata before ` -- ` defines pin state; literal tokens in summaries are data.
 - `[stale?]` — entry has not been updated in over `stale_after_days` days
 - Both tokens are optional and managed by the extension
 

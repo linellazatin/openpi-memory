@@ -164,7 +164,7 @@ The `/memory` command provides an interactive TUI browser. From it you can:
 
 Both hotkeys always act on the entry currently highlighted, and pin/remove resolve it by exact filename, so similarly-named entries are never confused.
 
-`/memory search <query>` opens the same browser pre-filtered to matching entries.
+`/memory search <query>` searches indexed topics only and opens the same browser pre-filtered to matching entries. Removed and unindexed topic files are excluded. Removal and pin queries must not be blank.
 
 `/memory consolidate` instructs the agent to scan the current conversation and call `write_memory` for each undocumented fact, decision, discovery, or config detail that belongs in memory under your current `memory.jsonc` rules. Use at natural session breakpoints or before switching context. Enable `consolidate_on_compact: true` in `memory.jsonc` to run this automatically after threshold compaction; that path also stores pi's compaction summary as the next `HANDOFF.md` orientation entry.
 

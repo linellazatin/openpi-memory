@@ -32,6 +32,7 @@ Top-level layout:
 
 Recent versions noted in the README:
 
+- **v0.3.12**: pi 1.6.0 compatibility and fixes for disabled handoffs, pin metadata, blank mutation queries, migration retries, and indexed-only search. Regression suite: 145 core and 18 extension checks on pi 1.2.0 and 1.6.0.
 - **v0.3.11**: bounded handoff entries (12 KiB including metadata/markers), tail history reads (50 KiB), UTF-8-safe truncation, and legacy newline handling. Pi 1.5.0 joins CI; the npm package includes the changelog.
 - **v0.3.10** — pi 1.2 compatibility: custom-message runs do not advance user-prompt injection state or consume handoffs; legacy events remain supported. Lockfile dev baseline is pi 1.2.0; CI covers 0.87.0, 0.99.1, 1.1.0, and 1.2.0.
 - **v0.3.9** — shared-store coordination with openclaude-memory; read-only missing-index reads, locked async recap retirement, directory-pinned mutations, bounded local contention, no-follow/bounded reads, per-file rollback, refreshed frontmatter metadata, and exclusive config publication. Verified against pi 0.99.1 and pi 1.0.0 (API additions only) with no source changes.
@@ -42,7 +43,7 @@ Recent versions noted in the README:
 - Mutations retain the acquired directory across config changes. Local contention refuses after about 500 ms; shared mode waits about 2 s and retries once after 1 s. Never bypass a busy lock.
 - Carry-over locks local then shared and respects both removal lists. Shared removal intent is recorded before deleting discoverability. New topics preserve unrelated unindexed slug owners.
 - Reads verify no-follow regular-file descriptors; previews/search are bounded after opening. Atomic writes flush/clean temporary files, and ordinary write failures attempt rollback. Do not claim multi-file crash atomicity or atomic compare-and-unlink leases.
-- Current baseline: 141 core checks and typecheck pass on pi 0.87.0 and 1.5.0; prior 134-check verification covered 0.99.1, 1.1.0, and 1.2.0. CI covers all five versions; the lockfile dev baseline remains 1.2.0; 15 extension checks on the floor and 17 on newer hosts (two collision checks require pi >=0.99). Pi 1.1.0 CI aligns host-package versions to avoid incompatible 1.2 transitive dependencies. OpenCode's optional real-process shared-writer check also exercises this core. Its per-request injection differs from pi's unchanged scheduled injection.
+- Current baseline: 141 core checks and typecheck pass on pi 0.87.0, 1.5.0, and 1.6.0; prior 134-check verification covered 0.99.1, 1.1.0, and 1.2.0. CI targets all six versions; the lockfile dev baseline remains 1.2.0; 15 extension checks on the floor and 17 on newer hosts (two collision checks require pi >=0.99). Pi 1.1.0 CI aligns host-package versions to avoid incompatible 1.2 transitive dependencies. OpenCode's optional real-process shared-writer check also exercises this core. Its per-request injection differs from pi's unchanged scheduled injection.
 
 - There are two test targets: `tests/core.test.mjs` and `tests/extension.test.mjs`. Run the narrowest relevant test before the full suite when changing behavior.
 - `npm test` chains both test files with `&&`, so a failure in the first stops the second.
