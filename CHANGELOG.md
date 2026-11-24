@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.12] - 2026-11-24
+
+### Fixed
+
+- Honored disabled handoffs when injecting prompts and deciding handoff-aware continuation; existing history stays on disk.
+- Parsed pin flags before the summary, preserving literal `[pin]` text in summaries; pinning also clears stale markers.
+- Rejected blank removal and pin queries instead of mutating a sole matching topic.
+- Reused identical numbered migration destinations on carry-over retries.
+- Restricted body search to indexed topics so removed entries stay undiscoverable and browser results remain usable.
+
+### Changed
+
+- Added pi 1.6.0 to the CI compatibility matrix, retaining the pi 0.87.0 floor and pi 1.2.0 lockfile dev baseline.
+- Refreshed compatibility documentation after assessing pi 1.6.0; no pi API migration was required.
+
+### Tests
+
+- Added regression coverage for disabled handoff injection, pin-like summary text, blank mutation queries, indexed-only search, and numbered migration retries. Typecheck, 145 core checks, and 18 extension checks pass on pi 1.2.0 and 1.6.0.
+
 ## [0.3.11] - 2026-11-04
 
 ### Fixed
