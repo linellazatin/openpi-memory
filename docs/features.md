@@ -24,7 +24,7 @@ Resume from here without asking the user to re-explain.
 - Removed DynamicBorder and Container imports
 ```
 
-Raw and summary handoff entries are capped at 12 KiB each, including the header and an explicit truncation marker when needed; truncation preserves UTF-8 character boundaries. Injection and mutations read only the final 50 KiB of history. Complete newer entries are preferred over a partial older entry; if the latest entry alone exceeds that window, its available tail is marked and capped. The file is pruned automatically: by default up to the last 3 compaction entries are kept, but oversized history can reduce the number retained. Configure via `handoff_keep` in `memory.jsonc`. Set to `0` to disable the feature entirely.
+Raw and summary handoff entries are capped at 12 KiB each, including the header and an explicit truncation marker when needed; truncation preserves UTF-8 character boundaries. Injection and mutations read only the final 50 KiB of history. Complete newer entries are preferred over a partial older entry; if the latest entry alone exceeds that window, its available tail is marked and capped. The file is pruned automatically: by default up to the last 3 compaction entries are kept, but oversized history can reduce the number retained. Configure via `handoff_keep` in `memory.jsonc`. Set to `0` to disable handoff writes, injection, and handoff-aware continuation. Existing history is preserved on disk; explicit auto-resume and consolidation settings remain independent.
 
 ## Auto-Resume After Threshold Compaction (opt-in)
 

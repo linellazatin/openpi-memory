@@ -22,7 +22,13 @@ A port of [openclaude-memory](https://github.com/linellazatin/openclaude-memory)
 > Considering that vast majority of people who use **pi** literally creates their own extensions, I'm shooting my shot on this memory extension that I believe is good enough to be your *ultra-simplest* memory handler.
 
 >
-> `Compatibility verified on pi 0.87.0, 0.99.1, 1.1.0, 1.2.0, and 1.5.0`
+> `Compatibility checks passed on pi 0.87.0, 0.99.1, 1.1.0, 1.2.0, 1.5.0, and 1.6.0`
+>
+> ## v0.3.12 - pi 1.6 compatibility
+>
+> - fixes disabled handoffs, pin metadata, blank mutation queries, migration retries, and indexed-only search
+> - compatibility assessment passed 141 core and 17 extension checks on pi 1.6.0; live-provider compaction, interactive rendering, and end-to-end tool invocation were not tested
+> - CI includes pi 1.6.0; the pi 0.87.0 floor is unchanged
 >
 > ## v0.3.11 - bounded compaction handoffs and pi 1.5 compatibility
 > - handoff entries are capped at 12 KiB with truncation markers; history reads inspect only the final 50 KiB
@@ -155,7 +161,7 @@ Use the tools for validated, locked updates rather than direct file edits. A mis
 
 **`/memory pin/unpin/remove <topic>`** are a chat-input fallback for when you already know the topic name and want to skip opening the browser. They run directly in the command handler — no LLM round-trip.
 
-**`/memory search <query>`** does a case-insensitive substring search across the index (name, filename, summary) and all topic file bodies. Matching entries open in the full interactive browser — same pin/unpin, remove, and detail view as `/memory`. No LLM round-trip.
+**`/memory search <query>`** does a case-insensitive substring search across the index (name, filename, summary) and indexed topic file bodies. Removed or otherwise unindexed files are excluded. Matching entries open in the full interactive browser — same pin/unpin, remove, and detail view as `/memory`. No LLM round-trip.
 
 **`/memory consolidate`** sends a rules-driven prompt to the agent asking it to scan the current conversation history and call `write_memory` for each fact, decision, discovery, config detail, or technical learning that belongs in long-term memory under your current `memory.jsonc` rules (`always_persist`/`never_persist`/`always_ask` are rendered into the prompt), keeping the index focused on durable facts.
 
@@ -179,7 +185,7 @@ pi install git:github.com/linellazatin/openpi-memory
 
 The extension and skill load automatically after install. No further setup.
 
-**Requires pi coding agent `>=0.87.0`** (tests and typecheck verified on pi `0.87.0`, `0.99.1`, `1.1.0`, `1.2.0`, and `1.5.0`). This is declared as an advisory `peerDependency` — pi provides its own copy of the API at runtime, so npm won't hard-block an older install; if you're on an older pi and auto-resume/consolidation stop working, upgrade pi.
+**Requires pi coding agent `>=0.87.0`** (tests and typecheck verified on pi `0.87.0`, `0.99.1`, `1.1.0`, `1.2.0`, `1.5.0`, and `1.6.0`). This is declared as an advisory `peerDependency` — pi provides its own copy of the API at runtime, so npm won't hard-block an older install; if you're on an older pi and auto-resume/consolidation stop working, upgrade pi.
 
 ## Update
 
@@ -194,7 +200,7 @@ pi update --extensions
 ```
 or just always do ` --all` for convenience
 
-Versioned installs (e.g. `npm:@openlines/openpi-memory@0.3.11`) are pinned and skipped by `--extensions`. Use `pi install npm:@openlines/openpi-memory@new-version` to move to a specific version.
+Versioned installs (e.g. `npm:@openlines/openpi-memory@0.3.12`) are pinned and skipped by `--extensions`. Use `pi install npm:@openlines/openpi-memory@new-version` to move to a specific version.
 
 ## Uninstall
 

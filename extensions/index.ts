@@ -126,7 +126,7 @@ export default function (pi: ExtensionAPI) {
           `Edit ${MEMORY_RULES} to customise.\n\n${rulesMarkdown}`;
       }
 
-      const handoff = _handoffConsumed ? '' : readHandoff();
+      const handoff = _handoffConsumed || rules.handoffKeep === 0 ? '' : readHandoff();
       if (handoff) {
         _handoffConsumed = true;
         extra +=
@@ -174,7 +174,7 @@ export default function (pi: ExtensionAPI) {
     if (event.reason !== 'threshold' || event.willRetry) return;
 
     const rules = parseRules();
-    const handoff = readHandoff();
+    const handoff = rules.handoffKeep === 0 ? '' : readHandoff();
     const { action } = decideCompactionAction(rules, handoff);
 
     if (action === 'consolidate') {

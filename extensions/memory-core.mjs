@@ -255,7 +255,7 @@ function resolveDestName(srcPath, sharedDir, filename, sharedFilesOnDisk) {
   // Exceedingly rare: both slots taken by different content — bump a counter.
   let n = 2, candidate;
   do { candidate = filename.replace(/\.md$/, `-opim-${n}.md`); n++; }
-  while (sharedFilesOnDisk.has(candidate));
+  while (sharedFilesOnDisk.has(candidate) && !filesEqual(srcPath, path.join(sharedDir, candidate)));
   return candidate;
 }
 
@@ -694,12 +694,16 @@ function normalizeMemoryMetadata(topic, summary) {
  * Upsert a line in the index by filename. Appends if not found.
  * Preserves existing pin status when updating.
  */
+function isPinned(rest) {
+  return rest.split(' -- ')[0].includes('[pin]');
+}
+
 export function upsertIndexLine(lines, filename, name, summary, pin) {
   const dateStr = nowIso();
   for (let i = 0; i < lines.length; i++) {
     const parsed = parseIndexLine(lines[i]);
     if (!parsed || parsed.filename !== filename) continue;
-    const effectivePin = parsed.rest.includes('[pin]') || pin;
+    const effectivePin = isPinned(parsed.rest) || pin;
     const pinToken = effectivePin ? ' [pin]' : '';
     lines[i] = `- [${name}](${filename})${pinToken} ${dateStr} -- ${summary}`;
     return lines;
@@ -749,8 +753,9 @@ export function maintainIndex(lines, config, memoryDir = getMemoryDir()) {
     emitted.add(filename);
 
     let rest = parsed.rest;
-    const isPinned = rest.includes('[pin]');
-    if (!isPinned && staleAfterDays > 0) {
+    const pinned = isPinned(rest);
+    if (pinned) rest = rest.replace(' [stale?]', '');
+    if (!pinned && staleAfterDays > 0) {
       const dateMatch = rest.match(ISO_DATE_RE);
       if (dateMatch) {
         const age = daysSince(dateMatch[1]);
@@ -777,7 +782,7 @@ export function maintainIndex(lines, config, memoryDir = getMemoryDir()) {
 // the wrong entry; none -> null.
 // Returns { idx, parsed } | { ambiguous: true, names: string[] } | null.
 function findIndexEntry(lines, search) {
-  const s = search.toLowerCase();
+  const s = search.trim().toLowerCase();
   const substringMatches = [];
   for (let i = 0; i < lines.length; i++) {
     const parsed = parseIndexLine(lines[i]);
@@ -804,9 +809,11 @@ export function searchMemory(query) {
   const q = query.toLowerCase();
   const results = [];
   const indexedNames = new Set();
+  const entries = readIndexEntries();
+  const indexedFiles = new Set(entries.map(entry => entry.filename));
 
   // (a) index — name, filename, summary
-  for (const entry of readIndexEntries()) {
+  for (const entry of entries) {
     if (
       entry.name.toLowerCase().includes(q) ||
       entry.filename.toLowerCase().includes(q) ||
@@ -823,7 +830,7 @@ export function searchMemory(query) {
   const memoryDir = getMemoryDir();
   if (!fs.existsSync(memoryDir)) return results;
   for (const file of fs.readdirSync(memoryDir)) {
-    if (!isSafeTopicFilename(file)) continue;
+    if (!isSafeTopicFilename(file) || !indexedFiles.has(file)) continue;
     if (SKIP.has(file) || indexedNames.has(file)) continue;
     const filePath = path.join(memoryDir, file);
     if (!isRegularFile(filePath)) continue;
@@ -1010,6 +1017,7 @@ export async function executeWriteMemory({ topic, content, summary, pin = false,
 }
 
 export async function executeRemoveMemory({ topic }) {
+  if (typeof topic !== 'string' || !topic.trim()) return 'Invalid topic: topic must not be blank.';
   const result = await withLock(memoryDir => {
     const memoryIndex = path.join(memoryDir, 'MEMORY.md');
     if (!fs.existsSync(memoryIndex)) return 'No memory index found.';
@@ -1021,7 +1029,7 @@ export async function executeRemoveMemory({ topic }) {
     if (found.ambiguous)
       return `Multiple entries match "${topic}", be more specific: ${found.names.join(', ')}`;
 
-    if (found.parsed.rest.includes('[pin]'))
+    if (isPinned(found.parsed.rest))
       return `Cannot remove "${found.parsed.name}" — it is pinned. Unpin it first with: /memory unpin ${topic}`;
 
     lines.splice(found.idx, 1);
@@ -1034,6 +1042,7 @@ export async function executeRemoveMemory({ topic }) {
 }
 
 export async function executePinMemory({ topic, pin }) {
+  if (typeof topic !== 'string' || !topic.trim()) return 'Invalid topic: topic must not be blank.';
   const result = await withLock(memoryDir => {
     const memoryIndex = path.join(memoryDir, 'MEMORY.md');
     if (!fs.existsSync(memoryIndex)) return 'No memory index found.';
@@ -1047,7 +1056,7 @@ export async function executePinMemory({ topic, pin }) {
 
     const { idx, parsed } = found;
     const before = lines[idx];
-    const isCurrentlyPinned = lines[idx].includes('[pin]');
+    const isCurrentlyPinned = isPinned(parsed.rest);
 
     if (pin === isCurrentlyPinned)
       return `"${parsed.name}" is already ${pin ? 'pinned' : 'unpinned'}.`;
@@ -1056,7 +1065,9 @@ export async function executePinMemory({ topic, pin }) {
       // Insert [pin] immediately after the closing ) of the markdown link
       lines[idx] = lines[idx].replace(/(\]\([^)]+\))/, '$1 [pin]');
     } else {
-      lines[idx] = lines[idx].replace(' [pin]', '');
+      const delimiter = lines[idx].indexOf(' -- ');
+      const end = delimiter < 0 ? lines[idx].length : delimiter;
+      lines[idx] = lines[idx].slice(0, end).replace(' [pin]', '') + lines[idx].slice(end);
     }
 
     lines = maintainIndex(lines, parseRules(), memoryDir);
@@ -1214,7 +1225,7 @@ export function readIndexEntries() {
       filename: parsed.filename,
       date:     dateMatch    ? dateMatch[1]    : '—',
       summary:  summaryMatch ? summaryMatch[1] : '',
-      pinned:   parsed.rest.includes('[pin]'),
+      pinned:   isPinned(parsed.rest),
       stale:    parsed.rest.includes('[stale?]'),
     });
   }
